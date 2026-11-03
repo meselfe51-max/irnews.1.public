@@ -34,7 +34,7 @@ jobs:
               "ISNA": "https://www.isna.ir/rss",
               "Mehr": "https://www.mehrnews.com/rss",
               "Tasnim": "https://www.tasnimnews.ir/fa/rss",
-              "Fars": "https://www.farsnews.ir/rss",
+              "Fars": "https://farsnews.ir/rss",
               "Khabaronline": "https://www.khabaronline.ir/rss",
           }
 
