@@ -28,7 +28,7 @@ jobs:
               "IRNA": "https://www.irna.ir/rss",
               "ISNA": "https://www.isna.ir/rss",
               "Mehr": "https://www.mehrnews.com/rss",
-              "Tasnim": "https://www.tasnimnews.com/fa/rss/feed/0/7/0",
+              "Tasnim": "https://tasnimnews.ir/fa/rss/feed/0/7/0",
               "Fars": "https://www.farsnews.ir/rss",
               "Khabaronline": "https://www.khabaronline.ir/rss"
           }
