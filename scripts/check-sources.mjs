@@ -1,171 +1,154 @@
-// Source reachability test (step 2 of the build plan).
-// Runs on GitHub Actions (servers outside Iran) to see whether news sources
-// answer, expose an RSS feed, and serve images to a foreign site.
-// No dependencies, Node 18+.
-
 import { readFileSync, appendFileSync } from 'node:fs';
 
-const sources = JSON.parse(
-  readFileSync(new URL('../sources.json', import.meta.url), 'utf8')
-);
+const file = process.env.SOURCES_FILE || new URL('../sources.json', import.meta.url);
+const sources = JSON.parse(readFileSync(file, 'utf8'));
 
-const UA = 'Mozilla/5.0 (compatible; NewsSourceCheck/1.0)';
-const TIMEOUT_MS = 20000;
-const COMMON_FEED_PATHS = ['/rss', '/rss.xml', '/feed', '/feed.xml', '/fa/rss'];
+const UA = 'Mozilla/5.0 (compatible; LifeNewsBot/1.0)';
+const TIMEOUT_MS = 15000;
+const COMMON_PATHS = ['/rss', '/fa/rss', '/rss.xml', '/feed'];
 
-async function get(url, headers = {}, readBody = true) {
-  const start = Date.now();
-  try {
-    const res = await fetch(url, {
-      headers: { 'User-Agent': UA, ...headers },
-      redirect: 'follow',
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    });
-    const text = readBody ? await res.text() : '';
-    if (!readBody) await res.body?.cancel();
-    return {
-      ok: res.ok,
-      status: res.status,
-      ms: Date.now() - start,
-      type: res.headers.get('content-type') || '',
-      text,
-    };
-  } catch (e) {
-    return {
-      ok: false,
-      status: 0,
-      ms: Date.now() - start,
-      type: '',
-      text: '',
-      error: String(e?.cause?.code || e?.message || e),
-    };
-  }
-}
+const why = (e) => e?.cause?.code || e?.name || e?.message || 'error';
 
-function discoverFeeds(html, baseUrl) {
-  const found = [];
-  const re = /<link\b[^>]*>/gi;
-  for (const tag of html.match(re) || []) {
-    if (!/type=["']application\/(rss|atom)\+xml["']/i.test(tag)) continue;
-    const m = tag.match(/href=["']([^"']+)["']/i);
-    if (!m) continue;
+async function get(url, retries = 1) {
+  let lastErr;
+  for (let i = 0; i <= retries; i++) {
+    const t0 = Date.now();
     try {
-      found.push(new URL(m[1], baseUrl).href);
-    } catch {}
+      const res = await fetch(url, {
+        redirect: 'follow',
+        headers: { 'user-agent': UA, accept: '*/*' },
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+      });
+      return { res, ms: Date.now() - t0 };
+    } catch (err) {
+      lastErr = err;
+    }
   }
-  return [...new Set(found)];
+  throw lastErr;
 }
 
-function parseFeed(xml) {
-  const items = xml.match(/<item\b[\s\S]*?<\/item>|<entry\b[\s\S]*?<\/entry>/gi) || [];
-  const first = items[0] || '';
-  const title = /<title\b/i.test(first);
-  const link = /<link\b/i.test(first);
-  let image = null;
-  const patterns = [
-    /<enclosure[^>]+url=["']([^"']+)["']/i,
-    /<media:content[^>]+url=["']([^"']+)["']/i,
-    /<media:thumbnail[^>]+url=["']([^"']+)["']/i,
-    /<img[^>]+src=["']([^"']+)["']/i,
-    /&lt;img[^&]+src=["']([^"']+)["']/i,
-  ];
-  for (const p of patterns) {
-    const m = first.match(p);
+function toAbs(href, base) {
+  try { return new URL(href.replace(/&amp;/g, '&'), base).href; } catch { return null; }
+}
+
+function discoverRss(html, base) {
+  const out = [];
+  for (const m of html.matchAll(/<link[^>]+>/gi)) {
+    if (/type=["']application\/(rss|atom)\+xml["']/i.test(m[0])) {
+      const h = /href=["']([^"']+)["']/i.exec(m[0]);
+      const abs = h && toAbs(h[1], base);
+      if (abs) out.push(abs);
+    }
+  }
+  for (const m of html.matchAll(/<a[^>]+href=["']([^"']*rss[^"']*)["']/gi)) {
+    const abs = toAbs(m[1], base);
+    if (abs) out.push(abs);
+  }
+  return out;
+}
+
+function parseXml(xml) {
+  if (!/<(rss|feed|rdf:RDF)[\s>]/i.test(xml)) return null;
+  const blocks = xml.split(/<(?:item|entry)[\s>]/i).slice(1);
+  if (!blocks.length) return null;
+  const first = blocks[0];
+  return {
+    items: blocks.length,
+    titleOk: /<title[\s>]/i.test(first),
+    linkOk: /<link[\s>]/i.test(first) || /<guid[\s>]/i.test(first),
+    blocks,
+  };
+}
+
+function firstImage(blocks, base) {
+  for (const b of blocks.slice(0, 5)) {
+    const m =
+      /<enclosure[^>]+url=["']([^"']+)["'][^>]*>/i.exec(b) ||
+      /<media:content[^>]+url=["']([^"']+)["']/i.exec(b) ||
+      /<media:thumbnail[^>]+url=["']([^"']+)["']/i.exec(b) ||
+      /(?:<|&lt;)img[^>]+src=(?:["']|&quot;)([^"'&]+)/i.exec(b);
     if (m) {
-      image = m[1];
-      break;
+      const abs = toAbs(m[1], base);
+      if (abs && /^https?:/.test(abs)) return abs;
     }
   }
-  return { count: items.length, title, link, image };
+  return null;
 }
 
-async function checkSource(src) {
-  const r = { name: src.name };
+async function checkSource(s) {
+  const r = { name: s.name, site: '-', rss: '-', image: '-', status: '✅ OK', rssUrl: '' };
 
-  // 1) homepage
-  const home = await get(src.homepage);
-  r.home = home.ok ? `OK ${home.status} (${home.ms}ms)` : `FAIL ${home.status || home.error}`;
-
-  // 2) find feed
-  let feedUrl = src.rss_url;
-  r.feedSource = feedUrl ? 'manual' : '';
-  if (!feedUrl && home.ok) {
-    const discovered = discoverFeeds(home.text, src.homepage);
-    if (discovered.length) {
-      feedUrl = discovered[0];
-      r.feedSource = 'autodiscovery';
-    }
+  // ۱) صفحه‌ی اصلی
+  let html = '';
+  try {
+    const { res, ms } = await get(s.site);
+    html = res.ok ? await res.text() : '';
+    r.site = `${res.ok ? 'OK' : 'FAIL'} ${res.status} (${ms}ms)`;
+  } catch (e) {
+    r.site = `FAIL ${why(e)}`;
   }
-  if (!feedUrl) {
-    for (const p of COMMON_FEED_PATHS) {
-      const u = new URL(p, src.homepage).href;
-      const t = await get(u);
-      if (t.ok && /<(rss|feed)\b/i.test(t.text)) {
-        feedUrl = u;
-        r.feedSource = 'guessed path';
+
+  // ۲) RSS: اول آدرس دستی، بعد کشف خودکار، بعد مسیرهای رایج
+  const candidates = [];
+  if (s.rss_url) candidates.push(s.rss_url);
+  else {
+    candidates.push(...discoverRss(html, s.site));
+    for (const p of COMMON_PATHS) candidates.push(new URL(p, s.site).href);
+  }
+  let feed = null;
+  for (const url of [...new Set(candidates)].slice(0, 8)) {
+    try {
+      const { res, ms } = await get(url);
+      if (!res.ok) continue;
+      const parsed = parseXml(await res.text());
+      if (parsed) {
+        feed = { url, ms, ...parsed };
         break;
       }
+    } catch { /* کاندیدای بعدی */ }
+  }
+  if (feed) {
+    r.rssUrl = feed.url;
+    r.rss = `OK (${feed.ms}ms), items: ${feed.items}, title: ${feed.titleOk}, link: ${feed.linkOk}`;
+  } else {
+    r.rss = s.rss_url ? 'FAIL (آدرس rss_url جواب RSS معتبر نداد)' : 'NOT FOUND (آدرس RSS را در sources.json بگذارید)';
+    r.status = '❌ FAIL';
+    return r;
+  }
+
+  // ۳) عکس: بدون Referer، مثل وقتی که سرور تلگرام لینک را می‌گیرد
+  const img = firstImage(feed.blocks, feed.url);
+  if (!img) {
+    r.image = 'NO IMAGE in feed';
+    r.status = '⚠️ PARTIAL';
+  } else {
+    try {
+      const { res, ms } = await get(img, 2);
+      const type = res.headers.get('content-type') || '';
+      const good = res.ok && type.startsWith('image/');
+      r.image = `${good ? 'OK' : 'PROBLEM'} ${res.status} ${type.split(';')[0]} (${ms}ms)`;
+      if (!good) r.status = '⚠️ PARTIAL';
+    } catch (e) {
+      r.image = `PROBLEM ${why(e)}`;
+      r.status = '⚠️ PARTIAL';
     }
   }
-  if (!feedUrl) {
-    r.feed = 'NOT FOUND (put the RSS address in sources.json as rss_url)';
-    r.verdict = 'FAIL';
-    return r;
-  }
-  r.feedUrl = feedUrl;
-
-  // 3) fetch feed
-  const feed = await get(feedUrl);
-  if (!feed.ok) {
-    r.feed = `FAIL ${feed.status || feed.error}`;
-    r.verdict = 'FAIL';
-    return r;
-  }
-  const parsed = parseFeed(feed.text);
-  r.feed = `OK ${feed.status} (${feed.ms}ms), items: ${parsed.count}, title: ${parsed.title}, link: ${parsed.link}`;
-  if (parsed.count === 0) {
-    r.verdict = 'FAIL';
-    return r;
-  }
-
-  // 4) image test, with a foreign Referer (approximate hotlink check)
-  if (!parsed.image) {
-    r.image = 'no image found in first item';
-    r.verdict = 'PARTIAL';
-    return r;
-  }
-  const imgUrl = new URL(parsed.image, feedUrl).href;
-  const img = await get(imgUrl, { Referer: 'https://example.org/' }, false);
-  const isImage = /^image\//i.test(img.type);
-  r.image = img.ok && isImage
-    ? `OK ${img.status} ${img.type} (${img.ms}ms)`
-    : `PROBLEM ${img.status || img.error} ${img.type}`;
-  r.verdict = img.ok && isImage ? 'OK' : 'PARTIAL';
   return r;
 }
 
-const results = [];
-for (const src of sources) {
-  console.log(`Checking ${src.name} ...`);
-  results.push(await checkSource(src));
+const rows = [];
+for (const s of sources) {
+  const r = await checkSource(s);
+  rows.push(r);
+  console.log(`${r.status}  ${r.name}\n   site : ${r.site}\n   rss  : ${r.rss}\n   url  : ${r.rssUrl || '-'}\n   image: ${r.image}\n`);
 }
 
-const icon = { OK: '✅', PARTIAL: '⚠️', FAIL: '❌' };
-let md = '# Source reachability test\n\n';
-md += '| Source | Verdict | Homepage | Feed | Image |\n|---|---|---|---|---|\n';
-for (const r of results) {
-  md += `| ${r.name} | ${icon[r.verdict]} ${r.verdict} | ${r.home} | ${r.feed} | ${r.image || '-'} |\n`;
-}
-md += '\n## Feed addresses\n\n';
-for (const r of results) {
-  md += `- ${r.name}: ${r.feedUrl || '-'} (${r.feedSource || 'none'})\n`;
-}
-md +=
-  '\nNotes: OK = feed and image reachable from this server. PARTIAL = feed works but image missing or blocked. ' +
-  'FAIL = feed not reachable or not found. This test runs on a GitHub server; it does not prove Telegram can fetch the same images, ' +
-  'and the fake Referer only approximates a real hotlink check.\n';
+const md = [
+  '| منبع | وضعیت | سایت | RSS | عکس |',
+  '|---|---|---|---|---|',
+  ...rows.map((r) => `| ${r.name} | ${r.status} | ${r.site} | ${r.rss} | ${r.image} |`),
+  '',
+  ...rows.filter((r) => r.rssUrl).map((r) => `- ${r.name}: \`${r.rssUrl}\``),
+].join('\n');
 
-console.log('\n' + md);
-if (process.env.GITHUB_STEP_SUMMARY) {
-  appendFileSync(process.env.GITHUB_STEP_SUMMARY, md);
-}
+if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, md + '\n');
