@@ -19,7 +19,66 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests feedparser
+          pip install requests feedparser lxml
+
+      - name: Diagnose Tasnim RSS
+        run: |
+          python - <<'PY'
+          import requests
+          import feedparser
+          from lxml import etree
+
+          url = "https://www.tasnimnews.ir/fa/rss"
+
+          try:
+              r = requests.get(
+                  url,
+                  headers={"User-Agent": "Mozilla/5.0"},
+                  timeout=30
+              )
+
+              print("HTTP:", r.status_code)
+              print("Content-Type:", r.headers.get("Content-Type"))
+              print("Final URL:", r.url)
+              print("Response size:", len(r.content))
+              print("\nRAW RESPONSE:")
+              print(r.text[:1500])
+
+              r.raise_for_status()
+
+              feed = feedparser.parse(r.content)
+
+              print("\nDIRECT PARSE:")
+              print("Entries:", len(feed.entries))
+              print("Error:", feed.get("bozo_exception"))
+
+              parser = etree.XMLParser(
+                  recover=True,
+                  encoding="utf-8"
+              )
+
+              root = etree.fromstring(r.content, parser)
+
+              if root is not None:
+                  repaired = etree.tostring(
+                      root,
+                      encoding="utf-8",
+                      xml_declaration=True
+                  )
+
+                  result = feedparser.parse(repaired)
+
+                  print("\nREPAIRED PARSE:")
+                  print("Entries:", len(result.entries))
+
+                  for entry in result.entries[:5]:
+                      print("-", entry.get("title", "NO TITLE"))
+              else:
+                  print("XML RECOVERY FAILED")
+
+          except Exception as e:
+              print("TASNIM DIAGNOSTIC ERROR:", repr(e))
+          PY
 
       - name: Test RSS feeds
         run: |
@@ -27,7 +86,6 @@ jobs:
           import requests
           import feedparser
           import re
-          from urllib.parse import urlparse
 
           FEEDS = {
               "IRNA": "https://www.irna.ir/rss",
@@ -47,12 +105,9 @@ jobs:
 
           def find_image(entry):
               for field in ("media_content", "media_thumbnail"):
-                  items = entry.get(field, [])
-                  if items:
-                      for item in items:
-                          url = item.get("url")
-                          if url:
-                              return url
+                  for item in entry.get(field, []):
+                      if item.get("url"):
+                          return item["url"]
 
               for link in entry.get("links", []):
                   if link.get("type", "").startswith("image/"):
@@ -69,15 +124,12 @@ jobs:
                   re.IGNORECASE
               )
 
-              if match:
-                  return match.group(1)
-
-              return None
+              return match.group(1) if match else None
 
           for name, url in FEEDS.items():
               print("\n" + "=" * 55)
-              print(f"Testing: {name}")
-              print(f"URL: {url}")
+              print("Testing:", name)
+              print("URL:", url)
 
               try:
                   response = requests.get(
@@ -86,48 +138,45 @@ jobs:
                       timeout=25
                   )
 
-                  print(f"HTTP Status: {response.status_code}")
+                  print("HTTP Status:", response.status_code)
                   response.raise_for_status()
 
                   feed = feedparser.parse(response.content)
 
                   if feed.bozo and not feed.entries:
-                      raise Exception(
-                          f"Invalid RSS: {feed.bozo_exception}"
-                      )
+                      raise Exception(str(feed.bozo_exception))
 
                   if not feed.entries:
                       raise Exception("No RSS entries found")
 
+                  if feed.bozo:
+                      print("WARNING: XML parsing issue:", feed.bozo_exception)
+
                   print("RSS: VALID")
-                  print(f"Entries: {len(feed.entries)}")
+                  print("Entries:", len(feed.entries))
 
                   latest = feed.entries[0]
 
-                  print(f"Latest title: {latest.get('title', 'N/A')}")
-                  print(f"Latest link: {latest.get('link', 'N/A')}")
-                  print(f"Published: {latest.get('published', 'N/A')}")
+                  print("Latest title:", latest.get("title", "N/A"))
+                  print("Latest link:", latest.get("link", "N/A"))
+                  print("Published:", latest.get("published", "N/A"))
 
                   image = find_image(latest)
-
-                  if image:
-                      print(f"Image URL: {image}")
-                  else:
-                      print("Image URL: NOT FOUND")
+                  print("Image URL:", image or "NOT FOUND")
 
                   success += 1
                   print("RESULT: SUCCESS")
 
               except Exception as error:
                   failed += 1
-                  print(f"RESULT: FAILED")
-                  print(f"Error: {error}")
+                  print("RESULT: FAILED")
+                  print("Error:", repr(error))
 
           print("\n" + "=" * 55)
           print("FINAL SUMMARY")
-          print(f"Successful sources: {success}")
-          print(f"Failed sources: {failed}")
-          print(f"Total sources: {len(FEEDS)}")
+          print("Successful sources:", success)
+          print("Failed sources:", failed)
+          print("Total sources:", len(FEEDS))
           print("=" * 55)
 
           if success == 0:
