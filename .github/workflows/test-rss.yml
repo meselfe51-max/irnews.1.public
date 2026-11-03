@@ -1,5 +1,5 @@
 
-name: Test RSS Sources
+name: Test News RSS
 
 on:
   workflow_dispatch:
@@ -9,37 +9,75 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install requests feedparser
+        run: |
+          pip install requests feedparser
 
       - name: Test RSS feeds
         run: |
           python - <<'PY'
           import requests
           import feedparser
-          from datetime import datetime, timezone
+          import re
+          from urllib.parse import urlparse
 
-          feeds = {
+          FEEDS = {
               "IRNA": "https://www.irna.ir/rss",
               "ISNA": "https://www.isna.ir/rss",
               "Mehr": "https://www.mehrnews.com/rss",
-              "Tasnim": "https://www.tasnimnews.ir/fa/rss",,
+              "Tasnim": "https://www.tasnimnews.ir/fa/rss",
               "Fars": "https://www.farsnews.ir/rss",
-              "Khabaronline": "https://www.khabaronline.ir/rss"
+              "Khabaronline": "https://www.khabaronline.ir/rss",
           }
 
           headers = {
-              "User-Agent": "Mozilla/5.0 (compatible; NewsRSSBot/1.0)"
+              "User-Agent": "Mozilla/5.0 (compatible; RSSChecker/1.0)"
           }
 
-          for name, url in feeds.items():
-              print("\n" + "=" * 50)
-              print("SOURCE:", name)
+          success = 0
+          failed = 0
+
+          def find_image(entry):
+              for field in ("media_content", "media_thumbnail"):
+                  items = entry.get(field, [])
+                  if items:
+                      for item in items:
+                          url = item.get("url")
+                          if url:
+                              return url
+
+              for link in entry.get("links", []):
+                  if link.get("type", "").startswith("image/"):
+                      return link.get("href")
+
+              for enclosure in entry.get("enclosures", []):
+                  if enclosure.get("type", "").startswith("image/"):
+                      return enclosure.get("href")
+
+              content = entry.get("summary", "")
+              match = re.search(
+                  r'<img[^>]+src=["\']([^"\']+)["\']',
+                  content,
+                  re.IGNORECASE
+              )
+
+              if match:
+                  return match.group(1)
+
+              return None
+
+          for name, url in FEEDS.items():
+              print("\n" + "=" * 55)
+              print(f"Testing: {name}")
+              print(f"URL: {url}")
 
               try:
                   response = requests.get(
@@ -48,44 +86,50 @@ jobs:
                       timeout=25
                   )
 
-                  print("HTTP Status:", response.status_code)
-                  print("Response Size:", len(response.content), "bytes")
-
+                  print(f"HTTP Status: {response.status_code}")
                   response.raise_for_status()
 
                   feed = feedparser.parse(response.content)
 
                   if feed.bozo and not feed.entries:
-                      print("RESULT: INVALID RSS")
-                      print("Error:", feed.bozo_exception)
-                      continue
+                      raise Exception(
+                          f"Invalid RSS: {feed.bozo_exception}"
+                      )
 
-                  print("RSS Valid:", not feed.bozo)
-                  print("News Found:", len(feed.entries))
+                  if not feed.entries:
+                      raise Exception("No RSS entries found")
 
-                  if feed.entries:
-                      latest = feed.entries[0]
+                  print("RSS: VALID")
+                  print(f"Entries: {len(feed.entries)}")
 
-                      print("Latest Title:", latest.get("title", "N/A"))
-                      print("Latest Link:", latest.get("link", "N/A"))
-                      print("Published:", latest.get("published", "N/A"))
+                  latest = feed.entries[0]
 
-                      image = None
+                  print(f"Latest title: {latest.get('title', 'N/A')}")
+                  print(f"Latest link: {latest.get('link', 'N/A')}")
+                  print(f"Published: {latest.get('published', 'N/A')}")
 
-                      for link in latest.get("links", []):
-                          if link.get("type", "").startswith("image/"):
-                              image = link.get("href")
-                              break
+                  image = find_image(latest)
 
-                      if not image:
-                          image = latest.get("image", {}).get("href")
-
-                      print("Image URL:", image or "Not found")
-
+                  if image:
+                      print(f"Image URL: {image}")
                   else:
-                      print("RESULT: NO NEWS FOUND")
+                      print("Image URL: NOT FOUND")
+
+                  success += 1
+                  print("RESULT: SUCCESS")
 
               except Exception as error:
-                  print("RESULT: FAILED")
-                  print("Error:", str(error))
+                  failed += 1
+                  print(f"RESULT: FAILED")
+                  print(f"Error: {error}")
+
+          print("\n" + "=" * 55)
+          print("FINAL SUMMARY")
+          print(f"Successful sources: {success}")
+          print(f"Failed sources: {failed}")
+          print(f"Total sources: {len(FEEDS)}")
+          print("=" * 55)
+
+          if success == 0:
+              raise SystemExit("All RSS sources failed.")
           PY
