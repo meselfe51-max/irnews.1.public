@@ -1,0 +1,82 @@
+
+name: Test Neon Tables
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install PostgreSQL client
+        run: npm install pg
+
+      - name: Check database tables
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          node <<'NODE'
+          const { Client } = require("pg");
+
+          const expectedTables = [
+            "sources",
+            "categories",
+            "events",
+            "articles",
+            "article_versions",
+            "admins",
+            "admin_sessions",
+            "login_attempts",
+            "settings",
+            "ai_usage",
+            "logs"
+          ];
+
+          async function main() {
+            const client = new Client({
+              connectionString: process.env.DATABASE_URL,
+              ssl: { rejectUnauthorized: false }
+            });
+
+            try {
+              await client.connect();
+
+              const result = await client.query(`
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = 'public'
+                  AND table_type = 'BASE TABLE'
+                ORDER BY table_name;
+              `);
+
+              const existing = result.rows.map(row => row.table_name);
+              const missing = expectedTables.filter(
+                table => !existing.includes(table)
+              );
+
+              console.log("Expected tables:", expectedTables.length);
+              console.log("Found tables:", existing.length);
+              console.log("Existing tables:", existing.join(", "));
+
+              if (missing.length > 0) {
+                console.error("Missing tables:", missing.join(", "));
+                process.exitCode = 1;
+              } else {
+                console.log("SUCCESS: All 11 expected tables exist.");
+              }
+            } finally {
+              await client.end();
+            }
+          }
+
+          main().catch(error => {
+            console.error("Test failed:", error.message);
+            process.exit(1);
+          });
+          NODE
