@@ -1,8 +1,18 @@
 [
-  { "name": "ایرنا", "homepage": "https://www.irna.ir/", "rss_url": null },
-  { "name": "ایسنا", "homepage": "https://www.isna.ir/", "rss_url": null },
-  { "name": "مهر", "homepage": "https://www.mehrnews.com/", "rss_url": null },
-  { "name": "تسنیم", "homepage": "https://www.tasnimnews.ir/", "rss_url": null },
-  { "name": "فارس", "homepage": "https://farsnews.ir/", "rss_url": null },
-  { "name": "خبرآنلاین", "homepage": "https://www.khabaronline.ir/", "rss_url": null }
+  { "id": "irna", "name": "ایرنا", "site": "https://www.irna.ir/" },
+  { "id": "isna", "name": "ایسنا", "site": "https://www.isna.ir/" },
+  { "id": "mehr", "name": "مهر", "site": "https://www.mehrnews.com/" },
+  {
+    "id": "tasnim",
+    "name": "تسنیم",
+    "site": "https://www.tasnimnews.ir/",
+    "rss_url": "https://www.tasnimnews.ir/fa/rss/feed/0/0/8/1/TopStories"
+  },
+  {
+    "id": "fars",
+    "name": "فارس",
+    "site": "https://farsnews.ir/",
+    "rss_url": "https://farsnews.ir/rss"
+  },
+  { "id": "khabaronline", "name": "خبرآنلاین", "site": "https://www.khabaronline.ir/" }
 ]
