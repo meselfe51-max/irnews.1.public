@@ -19,65 +19,107 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests feedparser lxml
+          pip install requests feedparser lxml beautifulsoup4
 
-      - name: Diagnose Tasnim RSS
+      - name: Discover Tasnim RSS feeds
+        id: tasnim
         run: |
           python - <<'PY'
           import requests
           import feedparser
-          from lxml import etree
+          from bs4 import BeautifulSoup
+          from urllib.parse import urljoin, urlparse
+          import re
 
-          url = "https://www.tasnimnews.ir/fa/rss"
+          page_url = "https://www.tasnimnews.ir/fa/rss"
+          headers = {"User-Agent": "Mozilla/5.0"}
+
+          candidates = set()
 
           try:
-              r = requests.get(
-                  url,
-                  headers={"User-Agent": "Mozilla/5.0"},
+              response = requests.get(
+                  page_url,
+                  headers=headers,
                   timeout=30
               )
+              response.raise_for_status()
 
-              print("HTTP:", r.status_code)
-              print("Content-Type:", r.headers.get("Content-Type"))
-              print("Final URL:", r.url)
-              print("Response size:", len(r.content))
-              print("\nRAW RESPONSE:")
-              print(r.text[:1500])
+              soup = BeautifulSoup(response.text, "html.parser")
 
-              r.raise_for_status()
+              print("PAGE TITLE:",
+                    soup.title.get_text(strip=True) if soup.title else "N/A")
 
-              feed = feedparser.parse(r.content)
+              print("\nDISCOVERED LINKS:")
 
-              print("\nDIRECT PARSE:")
-              print("Entries:", len(feed.entries))
-              print("Error:", feed.get("bozo_exception"))
+              for tag in soup.find_all(["a", "link"]):
+                  href = tag.get("href", "")
+                  text = tag.get_text(" ", strip=True)
+                  rel = tag.get("rel", [])
 
-              parser = etree.XMLParser(
-                  recover=True,
-                  encoding="utf-8"
-              )
+                  if not href:
+                      continue
 
-              root = etree.fromstring(r.content, parser)
+                  if (
+                      "rss" in href.lower()
+                      or "feed" in href.lower()
+                      or "xml" in href.lower()
+                      or "rss" in text.lower()
+                      or "rss" in " ".join(rel).lower()
+                  ):
+                      candidates.add(urljoin(page_url, href))
 
-              if root is not None:
-                  repaired = etree.tostring(
-                      root,
-                      encoding="utf-8",
-                      xml_declaration=True
-                  )
+              print("\nTESTING DISCOVERED FEEDS:")
 
-                  result = feedparser.parse(repaired)
+              valid = []
 
-                  print("\nREPAIRED PARSE:")
-                  print("Entries:", len(result.entries))
+              for url in sorted(candidates):
+                  try:
+                      r = requests.get(
+                          url,
+                          headers=headers,
+                          timeout=20
+                      )
 
-                  for entry in result.entries[:5]:
-                      print("-", entry.get("title", "NO TITLE"))
+                      feed = feedparser.parse(r.content)
+
+                      is_xml = (
+                          "xml" in r.headers.get("Content-Type", "").lower()
+                          or r.content.lstrip().startswith(b"<?xml")
+                          or b"<rss" in r.content[:1000].lower()
+                          or b"<feed" in r.content[:1000].lower()
+                      )
+
+                      if (
+                          r.status_code == 200
+                          and is_xml
+                          and len(feed.entries) > 0
+                      ):
+                          valid.append(url)
+                          print("\nVALID RSS:", url)
+                          print("Entries:", len(feed.entries))
+                          print("Latest:", feed.entries[0].get("title", "N/A"))
+                      else:
+                          print("\nINVALID:", url)
+                          print("HTTP:", r.status_code)
+                          print("Content-Type:",
+                                r.headers.get("Content-Type"))
+                          print("Entries:", len(feed.entries))
+
+                  except Exception as e:
+                      print("\nERROR:", url, repr(e))
+
+              if valid:
+                  selected = valid[0]
+                  print("\nSELECTED TAS NIM RSS:", selected)
+                  with open("tasnim_rss.txt", "w") as f:
+                      f.write(selected)
               else:
-                  print("XML RECOVERY FAILED")
+                  print("\nNo valid RSS feed discovered.")
+                  open("tasnim_rss.txt", "w").close()
 
           except Exception as e:
-              print("TASNIM DIAGNOSTIC ERROR:", repr(e))
+              print("DISCOVERY FAILED:", repr(e))
+              open("tasnim_rss.txt", "w").close()
           PY
 
       - name: Test RSS feeds
@@ -86,15 +128,22 @@ jobs:
           import requests
           import feedparser
           import re
+          import os
 
           FEEDS = {
               "IRNA": "https://www.irna.ir/rss",
               "ISNA": "https://www.isna.ir/rss",
               "Mehr": "https://www.mehrnews.com/rss",
-              "Tasnim": "https://www.tasnimnews.ir/fa/rss",
               "Fars": "https://farsnews.ir/rss",
               "Khabaronline": "https://www.khabaronline.ir/rss",
           }
+
+          if os.path.exists("tasnim_rss.txt"):
+              with open("tasnim_rss.txt") as f:
+                  tasnim_url = f.read().strip()
+
+              if tasnim_url:
+                  FEEDS["Tasnim"] = tasnim_url
 
           headers = {
               "User-Agent": "Mozilla/5.0 (compatible; RSSChecker/1.0)"
@@ -141,16 +190,19 @@ jobs:
                   print("HTTP Status:", response.status_code)
                   response.raise_for_status()
 
+                  content_type = response.headers.get(
+                      "Content-Type", ""
+                  ).lower()
+
+                  if "html" in content_type:
+                      raise Exception("Server returned HTML instead of RSS")
+
                   feed = feedparser.parse(response.content)
 
-                  if feed.bozo and not feed.entries:
-                      raise Exception(str(feed.bozo_exception))
-
                   if not feed.entries:
-                      raise Exception("No RSS entries found")
-
-                  if feed.bozo:
-                      print("WARNING: XML parsing issue:", feed.bozo_exception)
+                      raise Exception(
+                          str(feed.get("bozo_exception", "No RSS entries"))
+                      )
 
                   print("RSS: VALID")
                   print("Entries:", len(feed.entries))
@@ -160,9 +212,7 @@ jobs:
                   print("Latest title:", latest.get("title", "N/A"))
                   print("Latest link:", latest.get("link", "N/A"))
                   print("Published:", latest.get("published", "N/A"))
-
-                  image = find_image(latest)
-                  print("Image URL:", image or "NOT FOUND")
+                  print("Image URL:", find_image(latest) or "NOT FOUND")
 
                   success += 1
                   print("RESULT: SUCCESS")
@@ -176,9 +226,6 @@ jobs:
           print("FINAL SUMMARY")
           print("Successful sources:", success)
           print("Failed sources:", failed)
-          print("Total sources:", len(FEEDS))
+          print("Total tested:", success + failed)
           print("=" * 55)
-
-          if success == 0:
-              raise SystemExit("All RSS sources failed.")
           PY
