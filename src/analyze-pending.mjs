@@ -1,4 +1,4 @@
-```javascript
+
 import postgres from 'postgres';
 
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -30,11 +30,14 @@ function cleanCategory(value) {
     .replace(/\s+/g, ' ')
     .trim();
 
-  return result.length > 0 && result.length <= 250 ? result : null;
+  return result.length > 0 && result.length <= 250
+    ? result
+    : null;
 }
 
 function getMetaContent(html, attribute, value) {
   const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
   const tags = html.match(/<meta\b[^>]*>/gi) || [];
 
   for (const tag of tags) {
@@ -46,24 +49,31 @@ function getMetaContent(html, attribute, value) {
     if (!attrPattern.test(tag)) continue;
 
     const content = tag.match(/\bcontent\s*=\s*["']([^"']+)["']/i);
-    if (content?.[1]) return cleanCategory(content[1]);
+
+    if (content?.[1]) {
+      return cleanCategory(content[1]);
+    }
   }
 
   return null;
 }
 
 function findJsonLdSection(value) {
-  if (!value || typeof value !== 'object') return null;
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
 
   if (Array.isArray(value)) {
     for (const item of value) {
       const found = findJsonLdSection(item);
       if (found) return found;
     }
+
     return null;
   }
 
   const section = cleanCategory(value.articleSection);
+
   if (section) return section;
 
   for (const child of Object.values(value)) {
@@ -86,6 +96,7 @@ function getPageCategory(html) {
 
   for (const [attribute, value] of metaCandidates) {
     const category = getMetaContent(html, attribute, value);
+
     if (category) return category;
   }
 
@@ -101,6 +112,7 @@ function getPageCategory(html) {
 
     try {
       const category = findJsonLdSection(JSON.parse(json));
+
       if (category) return category;
     } catch {
       // JSON-LD نامعتبر نادیده گرفته می‌شود.
@@ -111,11 +123,15 @@ function getPageCategory(html) {
     /<[^>]*itemprop=["']articleSection["'][^>]*>([\s\S]*?)<\/[^>]+>/i
   );
 
-  return itemprop?.[1] ? cleanCategory(itemprop[1]) : null;
+  return itemprop?.[1]
+    ? cleanCategory(itemprop[1])
+    : null;
 }
 
 async function fetchPageCategory(url) {
-  if (!url || !/^https?:\/\//i.test(url)) return null;
+  if (!url || !/^https?:\/\//i.test(url)) {
+    return null;
+  }
 
   try {
     const response = await fetch(url, {
@@ -129,6 +145,7 @@ async function fetchPageCategory(url) {
     if (!response.ok) return null;
 
     const contentType = response.headers.get('content-type') || '';
+
     if (
       !contentType.includes('text/html') &&
       !contentType.includes('application/xhtml+xml')
@@ -136,9 +153,14 @@ async function fetchPageCategory(url) {
       return null;
     }
 
-    return getPageCategory(await response.text());
+    const html = await response.text();
+
+    return getPageCategory(html);
   } catch (error) {
-    console.warn(`دریافت دسته صفحه ناموفق بود: ${url} | ${error.message}`);
+    console.warn(
+      `دریافت دسته صفحه ناموفق بود: ${url} | ${error.message}`
+    );
+
     return null;
   }
 }
@@ -146,7 +168,11 @@ async function fetchPageCategory(url) {
 async function main() {
   try {
     const articles = await sql`
-      SELECT id, source_url, title, source_category
+      SELECT
+        id,
+        source_url,
+        title,
+        source_category
       FROM articles
       WHERE status = 'pending'
         AND deleted_at IS NULL
@@ -178,11 +204,18 @@ async function main() {
         category = await fetchPageCategory(article.source_url);
         origin = 'صفحه خبر';
 
-        if (category) report.found_from_page++;
-        else report.not_found++;
+        if (category) {
+          report.found_from_page++;
+        } else {
+          report.not_found++;
+        }
       }
 
-      if (category && !DRY_RUN && !article.source_category) {
+      if (
+        category &&
+        !DRY_RUN &&
+        !article.source_category
+      ) {
         const updated = await sql`
           UPDATE articles
           SET source_category = ${category}
@@ -191,26 +224,34 @@ async function main() {
           RETURNING id
         `;
 
-        if (updated.length) report.saved++;
+        if (updated.length > 0) {
+          report.saved++;
+        }
       }
 
-      console.log(JSON.stringify({
-        id: article.id,
-        title: article.title,
-        source_category: category,
-        category_origin: category ? origin : null,
-        result: category ? 'found' : 'not_found',
-        mode: report.mode,
-      }));
+      console.log(
+        JSON.stringify({
+          id: article.id,
+          title: article.title,
+          source_category: category,
+          category_origin: category ? origin : null,
+          result: category ? 'found' : 'not_found',
+          mode: report.mode,
+        })
+      );
     }
 
     console.log('\n========== گزارش ==========');
     console.log(JSON.stringify(report, null, 2));
 
     if (DRY_RUN) {
-      console.log('حالت آزمایشی: هیچ داده‌ای در دیتابیس تغییر نکرد.');
+      console.log(
+        'حالت آزمایشی: هیچ داده‌ای در دیتابیس تغییر نکرد.'
+      );
     } else {
-      console.log('فقط ستون source_category برای خبرهای دارای دسته منبع ذخیره شد.');
+      console.log(
+        'فقط ستون source_category برای خبرهای دارای دسته منبع ذخیره شد.'
+      );
     }
   } finally {
     await sql.end({ timeout: 5 });
