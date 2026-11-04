@@ -1,18 +1,49 @@
 [
-  { "id": "irna", "name": "ایرنا", "site": "https://www.irna.ir/" },
-  { "id": "isna", "name": "ایسنا", "site": "https://www.isna.ir/" },
-  { "id": "mehr", "name": "مهر", "site": "https://www.mehrnews.com/" },
+  {
+    "id": "irna",
+    "name": "ایرنا",
+    "site": "https://www.irna.ir/",
+    "rss_url": "https://www.irna.ir/rss",
+    "enabled": true,
+    "interval_minutes": 15
+  },
+  {
+    "id": "isna",
+    "name": "ایسنا",
+    "site": "https://www.isna.ir/",
+    "rss_url": "https://www.isna.ir/rss",
+    "enabled": true,
+    "interval_minutes": 15
+  },
+  {
+    "id": "mehr",
+    "name": "مهر",
+    "site": "https://www.mehrnews.com/",
+    "rss_url": "https://www.mehrnews.com/rss",
+    "enabled": true,
+    "interval_minutes": 15
+  },
   {
     "id": "tasnim",
     "name": "تسنیم",
     "site": "https://www.tasnimnews.ir/",
-    "rss_url": "https://www.tasnimnews.ir/fa/rss/feed/0/0/8/1/TopStories"
+    "rss_url": "https://www.tasnimnews.ir/fa/rss/feed/0/0/8/0/AllStories",
+    "enabled": true,
+    "interval_minutes": 15
   },
   {
     "id": "fars",
     "name": "فارس",
     "site": "https://farsnews.ir/",
-    "rss_url": "https://farsnews.ir/rss"
+    "enabled": false,
+    "interval_minutes": 15
   },
-  { "id": "khabaronline", "name": "خبرآنلاین", "site": "https://www.khabaronline.ir/" }
+  {
+    "id": "khabaronline",
+    "name": "خبرآنلاین",
+    "site": "https://www.khabaronline.ir/",
+    "rss_url": "https://www.khabaronline.ir/rss",
+    "enabled": true,
+    "interval_minutes": 15
+  }
 ]
