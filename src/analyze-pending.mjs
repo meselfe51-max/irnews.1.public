@@ -1,23 +1,11 @@
-
+```javascript
 import postgres from 'postgres';
 
 const DATABASE_URL = process.env.DATABASE_URL;
-
-// حالت پیش‌فرض همیشه آزمایشی است.
-// فقط با DRY_RUN=false پردازش واقعی انجام می‌شود.
 const DRY_RUN = process.env.DRY_RUN !== 'false';
 
-const BATCH_SIZE = 50;
-const REFERENCE_LIMIT = 3000;
-const MIN_CATEGORY_SCORE = 2;
-
-const STOP_WORDS = new Set([
-  'از', 'به', 'در', 'با', 'برای', 'که', 'را',
-  'و', 'این', 'آن', 'یک', 'تا', 'اما', 'نیز',
-  'شد', 'شود', 'کرد', 'کرده', 'است', 'هست',
-  'می', 'خواهد', 'بر', 'پس', 'هم', 'هر',
-  'چه', 'چند', 'روی', 'بین', 'بعد', 'قبل',
-]);
+const BATCH_SIZE = 20;
+const REQUEST_TIMEOUT_MS = 12000;
 
 if (!DATABASE_URL) {
   throw new Error('DATABASE_URL تنظیم نشده است.');
@@ -30,472 +18,199 @@ const sql = postgres(DATABASE_URL, {
   prepare: false,
 });
 
-function normalizeText(value) {
-  return String(value || '')
-    .replace(/ي/g, 'ی')
-    .replace(/ك/g, 'ک')
-    .replace(/[ۀة]/g, 'ه')
-    .replace(/[\u064B-\u065F\u0670]/g, '')
-    .replace(/[\u200c\u200f]/g, ' ')
-    .replace(/ـ/g, '')
-    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+function cleanCategory(value) {
+  if (typeof value !== 'string') return null;
+
+  const result = value
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;|&#160;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
     .replace(/\s+/g, ' ')
-    .trim()
-    .toLowerCase();
+    .trim();
+
+  return result.length > 0 && result.length <= 250 ? result : null;
 }
 
-function tokenize(value) {
-  return normalizeText(value)
-    .split(' ')
-    .filter(word =>
-      word.length > 1 &&
-      !STOP_WORDS.has(word)
+function getMetaContent(html, attribute, value) {
+  const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const tags = html.match(/<meta\b[^>]*>/gi) || [];
+
+  for (const tag of tags) {
+    const attrPattern = new RegExp(
+      `\\b${attribute}\\s*=\\s*["']${escaped}["']`,
+      'i'
     );
-}
 
-function similarity(first, second) {
-  const a = new Set(tokenize(first));
-  const b = new Set(tokenize(second));
+    if (!attrPattern.test(tag)) continue;
 
-  if (!a.size || !b.size) return 0;
-
-  let intersection = 0;
-
-  for (const word of a) {
-    if (b.has(word)) intersection++;
+    const content = tag.match(/\bcontent\s*=\s*["']([^"']+)["']/i);
+    if (content?.[1]) return cleanCategory(content[1]);
   }
 
-  const union = new Set([...a, ...b]).size;
-
-  return union ? intersection / union : 0;
+  return null;
 }
 
-function containsPhrase(text, phrase) {
-  const normalizedText = ` ${normalizeText(text)} `;
-  const normalizedPhrase = ` ${normalizeText(phrase)} `;
+function findJsonLdSection(value) {
+  if (!value || typeof value !== 'object') return null;
 
-  return normalizedPhrase.trim().length > 0 &&
-    normalizedText.includes(normalizedPhrase);
-}
-
-function classifyArticle(article, categories) {
-  const content = `${article.title || ''} ${article.body_original || ''}`;
-
-  const results = [];
-
-  for (const category of categories) {
-    const keywords = Array.isArray(category.keywords)
-      ? category.keywords
-      : [];
-
-    let score = 0;
-    const matched = [];
-
-    for (const keyword of keywords) {
-      if (!containsPhrase(content, keyword)) continue;
-
-      const weight = normalizeText(keyword).includes(' ')
-        ? 3
-        : 1;
-
-      score += weight;
-      matched.push(keyword);
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findJsonLdSection(item);
+      if (found) return found;
     }
+    return null;
+  }
 
-    if (score > 0) {
-      results.push({
-        id: category.id,
-        slug: category.slug,
-        score,
-        matched,
-      });
+  const section = cleanCategory(value.articleSection);
+  if (section) return section;
+
+  for (const child of Object.values(value)) {
+    if (child && typeof child === 'object') {
+      const found = findJsonLdSection(child);
+      if (found) return found;
     }
   }
 
-  results.sort((a, b) => b.score - a.score);
-
-  if (!results.length || results[0].score < MIN_CATEGORY_SCORE) {
-    return {
-      categoryId: null,
-      matches: results.slice(0, 3),
-      reason: 'امتیاز کافی برای دسته‌بندی وجود ندارد',
-    };
-  }
-
-  const best = results[0];
-  const second = results[1];
-
-  if (second && best.score - second.score < 2) {
-    return {
-      categoryId: null,
-      matches: results.slice(0, 3),
-      reason: 'امتیاز دسته‌های برتر به یکدیگر نزدیک است',
-    };
-  }
-
-  return {
-    categoryId: best.id,
-    matches: results.slice(0, 3),
-    reason: 'دسته‌بندی با امتیاز کافی',
-  };
+  return null;
 }
 
-function determinePriority(article) {
-  const title = article.title || '';
-
-  const breaking = [
-    'خبر فوری',
-    'فوری',
-    'لحظه به لحظه',
-    'آخرین لحظات',
+function getPageCategory(html) {
+  const metaCandidates = [
+    ['property', 'article:section'],
+    ['name', 'article:section'],
+    ['name', 'section'],
+    ['property', 'og:article:section'],
   ];
 
-  const veryHigh = [
-    'وضعیت اضطراری',
-    'حمله نظامی',
-    'انفجار',
-    'زلزله شدید',
-  ];
-
-  const high = [
-    'هشدار',
-    'تعطیلی سراسری',
-    'تصمیم مهم',
-    'تصویب',
-    'استیضاح',
-  ];
-
-  if (breaking.some(word => containsPhrase(title, word))) {
-    return { score: 100, level: 'breaking' };
+  for (const [attribute, value] of metaCandidates) {
+    const category = getMetaContent(html, attribute, value);
+    if (category) return category;
   }
 
-  if (veryHigh.some(word => containsPhrase(title, word))) {
-    return { score: 80, level: 'very_high' };
+  const scripts = html.match(
+    /<script\b[^>]*type=["']application\/ld\+json["'][^>]*>[\s\S]*?<\/script>/gi
+  ) || [];
+
+  for (const script of scripts) {
+    const json = script
+      .replace(/^<script\b[^>]*>/i, '')
+      .replace(/<\/script>$/i, '')
+      .trim();
+
+    try {
+      const category = findJsonLdSection(JSON.parse(json));
+      if (category) return category;
+    } catch {
+      // JSON-LD نامعتبر نادیده گرفته می‌شود.
+    }
   }
 
-  if (high.some(word => containsPhrase(title, word))) {
-    return { score: 60, level: 'high' };
-  }
+  const itemprop = html.match(
+    /<[^>]*itemprop=["']articleSection["'][^>]*>([\s\S]*?)<\/[^>]+>/i
+  );
 
-  return { score: 40, level: 'normal' };
+  return itemprop?.[1] ? cleanCategory(itemprop[1]) : null;
 }
 
-function findPossibleDuplicate(article, references) {
-  const titleTokens = tokenize(article.title);
+async function fetchPageCategory(url) {
+  if (!url || !/^https?:\/\//i.test(url)) return null;
 
-  if (titleTokens.length < 3) return null;
+  try {
+    const response = await fetch(url, {
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      headers: {
+        'User-Agent': 'LifeNewsBot/1.0',
+        Accept: 'text/html,application/xhtml+xml',
+      },
+    });
 
-  let bestMatch = null;
-  let bestScore = 0;
+    if (!response.ok) return null;
 
-  for (const candidate of references) {
+    const contentType = response.headers.get('content-type') || '';
     if (
-      String(candidate.id) === String(article.id) ||
-      String(candidate.source_id) === String(article.source_id)
+      !contentType.includes('text/html') &&
+      !contentType.includes('application/xhtml+xml')
     ) {
-      continue;
+      return null;
     }
 
-    const exactTitle =
-      normalizeText(article.title) ===
-      normalizeText(candidate.title);
-
-    const titleScore = similarity(
-      article.title,
-      candidate.title
-    );
-
-    const bodyScore = similarity(
-      article.body_original,
-      candidate.body_original
-    );
-
-    const score = exactTitle
-      ? 1
-      : titleScore * 0.65 + bodyScore * 0.35;
-
-    const likelyDuplicate =
-      exactTitle ||
-      (
-        titleScore >= 0.82 &&
-        bodyScore >= 0.65
-      );
-
-    if (likelyDuplicate && score > bestScore) {
-      bestScore = score;
-
-      bestMatch = {
-        id: candidate.id,
-        source_id: candidate.source_id,
-        score: Number(score.toFixed(3)),
-      };
-    }
-  }
-
-  return bestMatch;
-}
-
-async function loadBatch(connection, lastId) {
-  if (lastId === null) {
-    return connection`
-      SELECT
-        id,
-        source_id,
-        title,
-        body_original,
-        category_id
-      FROM articles
-      WHERE status = 'pending'
-      ORDER BY id ASC
-      LIMIT ${BATCH_SIZE}
-      ${DRY_RUN ? connection`` : connection`FOR UPDATE`}
-    `;
-  }
-
-  return connection`
-    SELECT
-      id,
-      source_id,
-      title,
-      body_original,
-      category_id
-    FROM articles
-    WHERE status = 'pending'
-      AND id > ${lastId}
-    ORDER BY id ASC
-    LIMIT ${BATCH_SIZE}
-    ${DRY_RUN ? connection`` : connection`FOR UPDATE`}
-  `;
-}
-
-async function processBatch(batch, categories, references, connection) {
-  const report = {
-    processed: 0,
-    categorized: 0,
-    uncategorized: 0,
-    duplicates: 0,
-    priorities: {
-      breaking: 0,
-      very_high: 0,
-      high: 0,
-      normal: 0,
-    },
-  };
-
-  for (const article of batch) {
-    const classification = classifyArticle(article, categories);
-    const priority = determinePriority(article);
-
-    const duplicate = findPossibleDuplicate(
-      article,
-      references
-    );
-
-    if (!DRY_RUN) {
-      const updated = await connection`
-        UPDATE articles
-        SET
-          category_id = COALESCE(
-            ${classification.categoryId},
-            category_id
-          ),
-          priority_score = ${priority.score},
-          priority_level = ${priority.level},
-          verification = COALESCE(
-            verification,
-            'unverified'
-          ),
-          status = 'ready_for_review'
-        WHERE id = ${article.id}
-          AND status = 'pending'
-        RETURNING id
-      `;
-
-      if (!updated.length) continue;
-
-      if (duplicate) {
-        await connection`
-          INSERT INTO logs (
-            level,
-            scope,
-            message,
-            meta,
-            created_at
-          )
-          VALUES (
-            'warning',
-            'deduplication',
-            'احتمال خبر تکراری؛ نیازمند بررسی مدیر',
-            ${JSON.stringify({
-              article_id: article.id,
-              candidate_id: duplicate.id,
-              source_id: article.source_id,
-              candidate_source_id: duplicate.source_id,
-              similarity: duplicate.score,
-            })}::jsonb,
-            NOW()
-          )
-        `;
-      }
-    }
-
-    report.processed++;
-
-    if (classification.categoryId !== null) {
-      report.categorized++;
-    } else {
-      report.uncategorized++;
-    }
-
-    report.priorities[priority.level]++;
-
-    if (duplicate) report.duplicates++;
-
-    console.log(
-      JSON.stringify({
-        id: article.id,
-        title: article.title,
-        category: classification.categoryId,
-        category_reason: classification.reason,
-        category_matches: classification.matches,
-        priority: priority.level,
-        possible_duplicate: duplicate,
-        mode: DRY_RUN ? 'DRY_RUN' : 'LIVE',
-      })
-    );
-  }
-
-  return report;
-}
-
-function mergeReport(total, current) {
-  total.processed += current.processed;
-  total.categorized += current.categorized;
-  total.uncategorized += current.uncategorized;
-  total.duplicates += current.duplicates;
-
-  for (const key of Object.keys(total.priorities)) {
-    total.priorities[key] += current.priorities[key];
+    return getPageCategory(await response.text());
+  } catch (error) {
+    console.warn(`دریافت دسته صفحه ناموفق بود: ${url} | ${error.message}`);
+    return null;
   }
 }
 
 async function main() {
-  const total = {
-    processed: 0,
-    categorized: 0,
-    uncategorized: 0,
-    duplicates: 0,
-    priorities: {
-      breaking: 0,
-      very_high: 0,
-      high: 0,
-      normal: 0,
-    },
-  };
-
-  let lastId = null;
-  let batchNumber = 0;
-
-  console.log('================================');
-  console.log(`حالت اجرا: ${DRY_RUN ? 'آزمایشی؛ بدون تغییر دیتابیس' : 'واقعی'}`);
-  console.log(`اندازه هر بسته: ${BATCH_SIZE}`);
-  console.log('================================');
-
   try {
-    const categories = await sql`
-      SELECT id, slug, keywords
-      FROM categories
-      WHERE enabled = true
-      ORDER BY id
+    const articles = await sql`
+      SELECT id, source_url, title, source_category
+      FROM articles
+      WHERE status = 'pending'
+        AND deleted_at IS NULL
+      ORDER BY id ASC
+      LIMIT ${BATCH_SIZE}
     `;
 
-    if (!categories.length) {
-      throw new Error('هیچ دسته فعال خبری در دیتابیس وجود ندارد.');
-    }
+    const report = {
+      checked: 0,
+      already_had_category: 0,
+      found_from_page: 0,
+      not_found: 0,
+      saved: 0,
+      mode: DRY_RUN ? 'DRY_RUN' : 'LIVE',
+    };
 
-    while (true) {
-      let batch;
+    console.log(`حالت اجرا: ${report.mode}`);
+    console.log(`حداکثر خبر در این اجرا: ${BATCH_SIZE}`);
 
-      if (DRY_RUN) {
-        batch = await loadBatch(sql, lastId);
+    for (const article of articles) {
+      report.checked++;
+
+      let category = cleanCategory(article.source_category);
+      let origin = 'RSS';
+
+      if (category) {
+        report.already_had_category++;
       } else {
-        batch = await sql.begin(async tx => {
-          const selected = await loadBatch(tx, lastId);
+        category = await fetchPageCategory(article.source_url);
+        origin = 'صفحه خبر';
 
-          if (!selected.length) return [];
-
-          const references = await tx`
-            SELECT
-              id,
-              source_id,
-              title,
-              body_original
-            FROM articles
-            WHERE status <> 'rejected'
-              AND deleted_at IS NULL
-            ORDER BY fetched_at DESC, id DESC
-            LIMIT ${REFERENCE_LIMIT}
-          `;
-
-          const currentReport = await processBatch(
-            selected,
-            categories,
-            references,
-            tx
-          );
-
-          mergeReport(total, currentReport);
-
-          return selected;
-        });
+        if (category) report.found_from_page++;
+        else report.not_found++;
       }
 
-      if (!batch.length) break;
-
-      if (DRY_RUN) {
-        const references = await sql`
-          SELECT
-            id,
-            source_id,
-            title,
-            body_original
-          FROM articles
-          WHERE status <> 'rejected'
-            AND deleted_at IS NULL
-          ORDER BY fetched_at DESC, id DESC
-          LIMIT ${REFERENCE_LIMIT}
+      if (category && !DRY_RUN && !article.source_category) {
+        const updated = await sql`
+          UPDATE articles
+          SET source_category = ${category}
+          WHERE id = ${article.id}
+            AND source_category IS NULL
+          RETURNING id
         `;
 
-        const currentReport = await processBatch(
-          batch,
-          categories,
-          references,
-          sql
-        );
-
-        mergeReport(total, currentReport);
+        if (updated.length) report.saved++;
       }
 
-      lastId = batch[batch.length - 1].id;
-      batchNumber++;
-
-      console.log(
-        `بسته ${batchNumber} تمام شد؛ ` +
-        `تعداد بررسی‌شده: ${total.processed}`
-      );
+      console.log(JSON.stringify({
+        id: article.id,
+        title: article.title,
+        source_category: category,
+        category_origin: category ? origin : null,
+        result: category ? 'found' : 'not_found',
+        mode: report.mode,
+      }));
     }
 
-    console.log('\n========== نتیجه نهایی ==========');
-    console.log(JSON.stringify(total, null, 2));
+    console.log('\n========== گزارش ==========');
+    console.log(JSON.stringify(report, null, 2));
 
     if (DRY_RUN) {
-      console.log(
-        '\nحالت آزمایشی بود؛ هیچ تغییری در دیتابیس ثبت نشد.'
-      );
+      console.log('حالت آزمایشی: هیچ داده‌ای در دیتابیس تغییر نکرد.');
     } else {
-      console.log(
-        '\nپردازش واقعی با موفقیت به پایان رسید.'
-      );
+      console.log('فقط ستون source_category برای خبرهای دارای دسته منبع ذخیره شد.');
     }
   } finally {
     await sql.end({ timeout: 5 });
@@ -503,6 +218,6 @@ async function main() {
 }
 
 main().catch(error => {
-  console.error('خطای پردازش:', error);
+  console.error('خطای دریافت دسته‌بندی منبع:', error);
   process.exitCode = 1;
 });
