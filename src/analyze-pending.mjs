@@ -14,97 +14,304 @@ const sql = postgres(databaseUrl, {
   prepare: false,
 });
 
-function normalizePersian(value = '') {
-  return String(value)
-    .normalize('NFKC')
-    .toLowerCase()
-    .replace(/[يى]/g, 'ی')
+const BATCH_SIZE = 200;
+const REFERENCE_LIMIT = 5000;
+
+function normalizeText(value) {
+  return String(value || '')
+    .replace(/ي/g, 'ی')
     .replace(/ك/g, 'ک')
-    .replace(/[أإآ]/g, 'ا')
-    .replace(/ۀ/g, 'ه')
+    .replace(/[ۀة]/g, 'ه')
     .replace(/[\u064B-\u065F\u0670]/g, '')
-    .replace(/[\u200c\u200f\u200e]/g, ' ')
-    .replace(/[ـ]/g, '')
+    .replace(/\u200c/g, ' ')
     .replace(/[^\p{L}\p{N}\s]/gu, ' ')
     .replace(/\s+/g, ' ')
-    .trim();
+    .trim()
+    .toLowerCase();
 }
 
-function groupByTitle(articles) {
-  const groups = new Map();
+function tokenize(value) {
+  const stopWords = new Set([
+    'از', 'به', 'در', 'با', 'برای', 'که',
+    'را', 'و', 'این', 'آن', 'یک', 'تا',
+    'اما', 'نیز', 'شد', 'شود', 'کرد',
+    'کرده', 'است', 'هست', 'می', 'خواهد',
+  ]);
 
-  for (const article of articles) {
-    const normalized = normalizePersian(article.title);
+  return new Set(
+    normalizeText(value)
+      .split(' ')
+      .filter(word => word.length > 1 && !stopWords.has(word))
+  );
+}
 
-    if (!normalized) continue;
+function similarity(first, second) {
+  const a = tokenize(first);
+  const b = tokenize(second);
 
-    if (!groups.has(normalized)) {
-      groups.set(normalized, []);
-    }
+  if (!a.size || !b.size) return 0;
 
-    groups.get(normalized).push(article);
+  let intersection = 0;
+
+  for (const word of a) {
+    if (b.has(word)) intersection++;
   }
 
-  return [...groups.values()]
-    .filter(group => group.length > 1)
-    .map(group => ({
-      title: group[0].title,
-      articles: group.map(article => ({
-        id: article.id,
-        source: article.source_name,
-      })),
-    }));
+  const union = new Set([...a, ...b]).size;
+
+  return union ? intersection / union : 0;
+}
+
+function findCategory(article, categories) {
+  const text = normalizeText(
+    `${article.title} ${article.body_original || ''}`
+  );
+
+  let bestCategory = null;
+  let bestScore = 0;
+
+  for (const category of categories) {
+    const keywords = Array.isArray(category.keywords)
+      ? category.keywords
+      : [];
+
+    let score = 0;
+
+    for (const keyword of keywords) {
+      const normalizedKeyword = normalizeText(keyword);
+
+      if (
+        normalizedKeyword.length >= 2 &&
+        text.includes(normalizedKeyword)
+      ) {
+        score++;
+      }
+    }
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestCategory = category.id;
+    }
+  }
+
+  return bestCategory;
+}
+
+function determinePriority(article) {
+  const title = normalizeText(article.title);
+
+  const breakingWords = [
+    'خبر فوری',
+    'فوری',
+    'لحظه ای',
+    'فوریه',
+  ];
+
+  const veryHighWords = [
+    'زلزله',
+    'انفجار',
+    'سیل',
+    'آتش سوزی',
+    'بحران',
+    'اضطراری',
+  ];
+
+  const highWords = [
+    'تعطیلی',
+    'هشدار',
+    'تصمیم مهم',
+    'افزایش قیمت',
+    'کاهش قیمت',
+    'تصویب',
+  ];
+
+  if (breakingWords.some(word => title.includes(word))) {
+    return { score: 100, level: 'breaking' };
+  }
+
+  if (veryHighWords.some(word => title.includes(word))) {
+    return { score: 80, level: 'very_high' };
+  }
+
+  if (highWords.some(word => title.includes(word))) {
+    return { score: 60, level: 'high' };
+  }
+
+  return { score: 40, level: 'normal' };
+}
+
+function findPossibleDuplicate(article, references) {
+  const title = normalizeText(article.title);
+
+  if (!title) return null;
+
+  let bestMatch = null;
+  let bestScore = 0;
+
+  for (const candidate of references) {
+    if (
+      candidate.id === article.id ||
+      candidate.source_id === article.source_id
+    ) {
+      continue;
+    }
+
+    const candidateTitle = normalizeText(candidate.title);
+
+    if (!candidateTitle) continue;
+
+    const exactTitle = title === candidateTitle;
+    const titleScore = similarity(article.title, candidate.title);
+
+    const bodyScore = similarity(
+      article.body_original,
+      candidate.body_original
+    );
+
+    const isLikelyDuplicate =
+      exactTitle ||
+      (
+        tokenize(article.title).size >= 4 &&
+        titleScore >= 0.90 &&
+        bodyScore >= 0.72
+      );
+
+    if (isLikelyDuplicate) {
+      const score = exactTitle
+        ? 1
+        : titleScore * 0.7 + bodyScore * 0.3;
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestMatch = {
+          id: candidate.id,
+          source_id: candidate.source_id,
+          score: Number(score.toFixed(3)),
+        };
+      }
+    }
+  }
+
+  return bestMatch;
 }
 
 async function main() {
   try {
-    console.log('شروع بررسی فقط‌خواندنی اخبار...');
+    const result = await sql.begin(async tx => {
+      const categories = await tx`
+        SELECT id, name, slug, keywords
+        FROM categories
+        WHERE enabled = true
+        ORDER BY id
+      `;
 
-    const articles = await sql`
-      SELECT
-        a.id,
-        a.title,
-        a.body_original,
-        a.source_url,
-        a.status,
-        s.name AS source_name
-      FROM articles a
-      LEFT JOIN sources s ON s.id = a.source_id
-      WHERE a.status = 'pending'
-      ORDER BY a.id
-    `;
+      const articles = await tx`
+        SELECT
+          id,
+          source_id,
+          title,
+          body_original,
+          category_id,
+          verification
+        FROM articles
+        WHERE status = 'pending'
+        ORDER BY priority_score DESC NULLS LAST, fetched_at ASC
+        LIMIT ${BATCH_SIZE}
+        FOR UPDATE SKIP LOCKED
+      `;
 
-    const emptyTitles = articles.filter(
-      article => !normalizePersian(article.title)
-    );
+      console.log(`اخبار در صف پردازش: ${articles.length}`);
 
-    const emptyBodies = articles.filter(
-      article => !String(article.body_original || '').trim()
-    );
+      if (!articles.length) {
+        return {
+          processed: 0,
+          duplicates: 0,
+          categorized: 0,
+        };
+      }
 
-    const shortTitles = articles.filter(
-      article => normalizePersian(article.title).length < 5
-    );
+      const references = await tx`
+        SELECT id, source_id, title, body_original
+        FROM articles
+        ORDER BY fetched_at DESC
+        LIMIT ${REFERENCE_LIMIT}
+      `;
 
-    const duplicateCandidates = groupByTitle(articles);
+      let processed = 0;
+      let duplicates = 0;
+      let categorized = 0;
 
-    const report = {
-      mode: 'READ_ONLY',
-      totalPending: articles.length,
-      validTitles: articles.length - emptyTitles.length,
-      emptyTitles: emptyTitles.map(a => a.id),
-      emptyBodies: emptyBodies.map(a => a.id),
-      shortTitles: shortTitles.map(a => ({
-        id: a.id,
-        title: a.title,
-      })),
-      exactTitleDuplicateGroups: duplicateCandidates,
-      duplicateCandidateCount: duplicateCandidates.length,
-      databaseModified: false,
-    };
+      for (const article of articles) {
+        const categoryId = findCategory(article, categories);
+        const priority = determinePriority(article);
 
-    console.log('\nگزارش بررسی:');
-    console.log(JSON.stringify(report, null, 2));
+        const duplicate = findPossibleDuplicate(
+          article,
+          references
+        );
+
+        await tx`
+          UPDATE articles
+          SET
+            category_id = COALESCE(${categoryId}, category_id),
+            priority_score = ${priority.score},
+            priority_level = ${priority.level},
+            verification = COALESCE(verification, 'unverified'),
+            status = 'ready_for_review'
+          WHERE id = ${article.id}
+            AND status = 'pending'
+        `;
+
+        if (categoryId !== null) {
+          categorized++;
+        }
+
+        if (duplicate) {
+          duplicates++;
+
+          await tx`
+            INSERT INTO logs (
+              level,
+              scope,
+              message,
+              meta,
+              created_at
+            )
+            VALUES (
+              'warning',
+              'deduplication',
+              'احتمال خبر تکراری شناسایی شد؛ نیازمند بررسی مدیر',
+              ${JSON.stringify({
+                article_id: article.id,
+                candidate_id: duplicate.id,
+                source_id: article.source_id,
+                candidate_source_id: duplicate.source_id,
+                similarity: duplicate.score,
+              })}::jsonb,
+              NOW()
+            )
+          `;
+        }
+
+        processed++;
+
+        console.log(
+          `پردازش خبر ${article.id} | ` +
+          `دسته: ${categoryId ?? 'نامشخص'} | ` +
+          `اولویت: ${priority.level} | ` +
+          `تکراری احتمالی: ${duplicate ? 'بله' : 'خیر'}`
+        );
+      }
+
+      return {
+        processed,
+        duplicates,
+        categorized,
+      };
+    });
+
+    console.log('\nنتیجه پردازش:');
+    console.log(JSON.stringify(result, null, 2));
 
   } finally {
     await sql.end({ timeout: 5 });
@@ -112,6 +319,6 @@ async function main() {
 }
 
 main().catch(error => {
-  console.error('خطای بررسی اخبار:', error.message);
+  console.error('خطای پردازش اخبار:', error.message);
   process.exitCode = 1;
 });
