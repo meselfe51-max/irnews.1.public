@@ -1,4 +1,4 @@
-
+import { XMLParser } from 'fast-xml-parser';
 const SOURCES = [
   { name: 'IRNA', rss: 'https://www.irna.ir/rss' },
   { name: 'ISNA', rss: 'https://www.isna.ir/rss' },
