@@ -1,156 +1,103 @@
 import { readFileSync, appendFileSync } from 'node:fs';
 
-// تنظیمات
-const SOURCES_FILE =
-  process.env.SOURCES_FILE || new URL('../sources.json', import.meta.url);
-
-const USER_AGENT = 'Mozilla/5.0 (compatible; LifeNewsBot/1.0)';
+const SOURCES_FILE = new URL('../sources.json', import.meta.url);
+const USER_AGENT = 'Mozilla/5.0 (compatible; NewsSourcesCheck/1.0)';
 const TIMEOUT_MS = 15000;
-const MAX_RSS_CANDIDATES = 10;
 
-const COMMON_RSS_PATHS = [
-  '/rss',
-  '/fa/rss',
-  '/rss.xml',
-  '/feed',
-  '/feed/rss',
-];
-
-const WHY = (error) =>
-  error?.cause?.code ||
-  error?.name ||
-  error?.message ||
-  'Unknown error';
-
-// خواندن منابع
-let sources;
-
-try {
-  sources = JSON.parse(readFileSync(SOURCES_FILE, 'utf8'));
-
-  if (!Array.isArray(sources)) {
-    throw new Error('sources.json باید شامل یک آرایه باشد.');
-  }
-} catch (error) {
-  console.error('خطا در خواندن sources.json:', error.message);
-  process.exit(1);
-}
-
-// دریافت اطلاعات از URL
-async function request(url, timeout = TIMEOUT_MS) {
-  const startedAt = Date.now();
+async function fetchUrl(url) {
+  const started = Date.now();
 
   const response = await fetch(url, {
-    method: 'GET',
-    redirect: 'follow',
     headers: {
       'user-agent': USER_AGENT,
       accept: '*/*',
     },
-    signal: AbortSignal.timeout(timeout),
+    redirect: 'follow',
+    signal: AbortSignal.timeout(TIMEOUT_MS),
   });
 
   return {
     response,
-    duration: Date.now() - startedAt,
+    duration: Date.now() - started,
   };
 }
 
-// تبدیل لینک نسبی به لینک کامل
-function toAbsoluteUrl(href, base) {
+function absoluteUrl(value, base) {
   try {
-    const clean = href.replace(/&amp;/g, '&');
-    return new URL(clean, base).href;
+    return new URL(value.replace(/&amp;/g, '&'), base).href;
   } catch {
     return null;
   }
 }
 
-// استخراج RSS از HTML سایت
-function discoverRss(html, base) {
-  const found = [];
+function discoverFeeds(html, siteUrl) {
+  const urls = [];
+  const linkTags = html.match(/<link\b[^>]*>/gi) || [];
 
-  // تگ‌های link
-  for (const match of html.matchAll(/<link\b[^>]*>/gi)) {
-    const tag = match[0];
+  for (const tag of linkTags) {
+    if (!/(rss|atom)\+xml/i.test(tag)) continue;
 
-    const isFeed =
-      /application\/(rss|atom)\+xml/i.test(tag) ||
-      /rel=["'][^"']*alternate[^"']*["']/i.test(tag);
+    const match = tag.match(/href=["']([^"']+)["']/i);
 
-    if (!isFeed) continue;
-
-    const href = /href=["']([^"']+)["']/i.exec(tag);
-
-    if (href) {
-      const url = toAbsoluteUrl(href[1], base);
-      if (url) found.push(url);
+    if (match) {
+      const url = absoluteUrl(match[1], siteUrl);
+      if (url) urls.push(url);
     }
   }
 
-  // لینک‌هایی که در آدرسشان rss یا feed وجود دارد
-  for (const match of html.matchAll(
-    /<a\b[^>]*href=["']([^"']*(?:rss|feed)[^"']*)["'][^>]*>/gi
-  )) {
-    const url = toAbsoluteUrl(match[1], base);
-    if (url) found.push(url);
+  const hrefMatches = html.matchAll(
+    /href=["']([^"']*(?:rss|feed)[^"']*)["']/gi
+  );
+
+  for (const match of hrefMatches) {
+    const url = absoluteUrl(match[1], siteUrl);
+    if (url) urls.push(url);
   }
 
-  return [...new Set(found)];
+  return [...new Set(urls)];
 }
 
-// بررسی اولیه معتبر بودن XML
-function parseFeed(xml) {
-  const isXmlFeed =
-    /<(rss|feed|rdf:RDF)(?:\s|>)/i.test(xml);
+function inspectFeed(xml) {
+  if (!/<(?:rss|feed|rdf:RDF)(?:\s|>)/i.test(xml)) {
+    return null;
+  }
 
-  if (!isXmlFeed) return null;
+  const items = xml.split(/<(?:item|entry)(?:\s|>)/i).slice(1);
 
-  const blocks = xml.split(
-    /<(?:item|entry)(?:\s|>)/i
-  ).slice(1);
+  if (items.length === 0) {
+    return null;
+  }
 
-  if (blocks.length === 0) return null;
-
-  const firstItem = blocks[0];
-
-  const titleOk = /<title(?:\s|>)/i.test(firstItem);
-
-  const linkOk =
-    /<link(?:\s|>)/i.test(firstItem) ||
-    /<guid(?:\s|>)/i.test(firstItem);
+  const first = items[0];
 
   return {
-    items: blocks.length,
-    titleOk,
-    linkOk,
-    blocks,
+    items: items.length,
+    hasTitle: /<title(?:\s|>)/i.test(first),
+    hasLink:
+      /<link(?:\s|>)/i.test(first) ||
+      /<guid(?:\s|>)/i.test(first),
+    itemBlocks: items,
   };
 }
 
-// استخراج اولین عکس از RSS
-function findFirstImage(blocks, base) {
-  for (const block of blocks.slice(0, 10)) {
-    const patterns = [
-      /<enclosure\b[^>]*url=["']([^"']+)["'][^>]*>/i,
-      /<media:content\b[^>]*url=["']([^"']+)["'][^>]*>/i,
-      /<media:thumbnail\b[^>]*url=["']([^"']+)["'][^>]*>/i,
-      /<(?:img|image)\b[^>]*(?:src|url)=["']([^"']+)["'][^>]*>/i,
-      /<img\b[^>]*src=(?:["']|&quot;)([^"'&]+)/i,
-    ];
+function extractImage(itemBlocks, feedUrl) {
+  const patterns = [
+    /<enclosure\b[^>]*url=["']([^"']+)["']/i,
+    /<media:content\b[^>]*url=["']([^"']+)["']/i,
+    /<media:thumbnail\b[^>]*url=["']([^"']+)["']/i,
+    /<img\b[^>]*src=["']([^"']+)["']/i,
+  ];
 
+  for (const item of itemBlocks.slice(0, 10)) {
     for (const pattern of patterns) {
-      const match = pattern.exec(block);
+      const match = item.match(pattern);
 
-      if (!match) continue;
+      if (match) {
+        const url = absoluteUrl(match[1], feedUrl);
 
-      const imageUrl = toAbsoluteUrl(match[1], base);
-
-      if (
-        imageUrl &&
-        /^https?:\/\//i.test(imageUrl)
-      ) {
-        return imageUrl;
+        if (url && /^https?:\/\//i.test(url)) {
+          return url;
+        }
       }
     }
   }
@@ -158,27 +105,25 @@ function findFirstImage(blocks, base) {
   return null;
 }
 
-// بررسی یک منبع خبری
 async function checkSource(source) {
   const result = {
     name: source.name || 'Unknown',
+    status: '✅ OK',
     site: '-',
     rss: '-',
     rssUrl: '',
     image: '-',
-    status: '✅ OK',
   };
 
-  // منابع غیرفعال بررسی نمی‌شوند
   if (source.enabled === false) {
     result.status = '⏭️ SKIPPED';
     result.site = 'Disabled';
     result.rss = 'Disabled';
     result.image = 'Disabled';
+
     return result;
   }
 
-  // اعتبارسنجی آدرس سایت
   let siteUrl;
 
   try {
@@ -188,4 +133,230 @@ async function checkSource(source) {
       throw new Error('Invalid protocol');
     }
   } catch {
-    result.site =
+    result.status = '❌ FAIL';
+    result.site = 'Invalid site URL';
+    result.rss = 'Not checked';
+    result.image = 'Not checked';
+
+    return result;
+  }
+
+  let siteHtml = '';
+
+  try {
+    const { response, duration } = await fetchUrl(source.site);
+
+    result.site = `${response.status} (${duration}ms)`;
+
+    if (response.ok) {
+      siteHtml = await response.text();
+    } else {
+      result.status = '❌ FAIL';
+    }
+  } catch (error) {
+    result.site = `ERROR: ${error.message}`;
+    result.status = '❌ FAIL';
+  }
+
+  const candidates = [];
+
+  if (source.rss_url) {
+    candidates.push(source.rss_url);
+  }
+
+  if (siteHtml) {
+    candidates.push(...discoverFeeds(siteHtml, source.site));
+  }
+
+  for (const path of [
+    '/rss',
+    '/fa/rss',
+    '/rss.xml',
+    '/feed',
+    '/feed/rss',
+  ]) {
+    candidates.push(new URL(path, source.site).href);
+  }
+
+  let feed = null;
+
+  for (const candidate of [...new Set(candidates)].slice(0, 12)) {
+    try {
+      const { response, duration } = await fetchUrl(candidate);
+
+      if (!response.ok) continue;
+
+      const xml = await response.text();
+      const parsed = inspectFeed(xml);
+
+      if (parsed) {
+        feed = {
+          url: candidate,
+          duration,
+          ...parsed,
+        };
+
+        break;
+      }
+    } catch {
+      // بررسی آدرس بعدی
+    }
+  }
+
+  if (!feed) {
+    result.rss = 'No valid RSS feed found';
+    result.image = 'Not checked';
+    result.status = '❌ FAIL';
+
+    return result;
+  }
+
+  result.rssUrl = feed.url;
+  result.rss = `Valid (${feed.duration}ms), ${feed.items} entries`;
+
+  if (!feed.hasTitle || !feed.hasLink) {
+    result.status = '⚠️ PARTIAL';
+  }
+
+  const imageUrl = extractImage(feed.itemBlocks, feed.url);
+
+  if (!imageUrl) {
+    result.image = 'No image URL in feed';
+    result.status = '⚠️ PARTIAL';
+
+    return result;
+  }
+
+  try {
+    const { response, duration } = await fetchUrl(imageUrl);
+
+    const contentType =
+      response.headers.get('content-type') || '';
+
+    const validImage =
+      response.ok &&
+      contentType.toLowerCase().startsWith('image/');
+
+    result.image =
+      `${response.status} ` +
+      `${contentType.split(';')[0]} ` +
+      `(${duration}ms)`;
+
+    try {
+      await response.body?.cancel();
+    } catch {
+      // نادیده گرفتن خطای بستن اتصال
+    }
+
+    if (!validImage) {
+      result.status = '⚠️ PARTIAL';
+    }
+  } catch (error) {
+    result.image = `ERROR: ${error.message}`;
+    result.status = '⚠️ PARTIAL';
+  }
+
+  return result;
+}
+
+// خواندن فایل منابع
+let sources;
+
+try {
+  sources = JSON.parse(readFileSync(SOURCES_FILE, 'utf8'));
+
+  if (!Array.isArray(sources)) {
+    throw new Error('Expected an array in sources.json');
+  }
+} catch (error) {
+  console.error(`Cannot read sources.json: ${error.message}`);
+  process.exit(1);
+}
+
+// اجرای بررسی منابع
+const results = [];
+
+console.log('\n========== NEWS SOURCES CHECK ==========\n');
+
+for (const source of sources) {
+  const result = await checkSource(source);
+
+  results.push(result);
+
+  console.log(
+    `${result.status} ${result.name}\n` +
+    `  Site : ${result.site}\n` +
+    `  RSS  : ${result.rss}\n` +
+    `  URL  : ${result.rssUrl || '-'}\n` +
+    `  Image: ${result.image}\n`
+  );
+}
+
+// محاسبه آمار
+const active = results.filter(
+  (item) => item.status !== '⏭️ SKIPPED'
+);
+
+const successful = active.filter(
+  (item) => item.status === '✅ OK'
+).length;
+
+const partial = active.filter(
+  (item) => item.status === '⚠️ PARTIAL'
+).length;
+
+const failed = active.filter(
+  (item) => item.status === '❌ FAIL'
+).length;
+
+const skipped = results.length - active.length;
+
+// نمایش گزارش
+console.log('========== SUMMARY ==========');
+console.log(`Total sources : ${results.length}`);
+console.log(`Active sources: ${active.length}`);
+console.log(`Successful    : ${successful}`);
+console.log(`Partial       : ${partial}`);
+console.log(`Failed        : ${failed}`);
+console.log(`Skipped       : ${skipped}`);
+
+// گزارش GitHub Actions
+const summary = [
+  '# News Sources Check',
+  '',
+  `- Total: ${results.length}`,
+  `- Active: ${active.length}`,
+  `- Successful: ${successful}`,
+  `- Partial: ${partial}`,
+  `- Failed: ${failed}`,
+  `- Skipped: ${skipped}`,
+  '',
+  '| Source | Status | Site | RSS | Image |',
+  '|---|---|---|---|---|',
+  ...results.map(
+    (item) =>
+      `| ${item.name} | ${item.status} | ${item.site} | ${item.rss} | ${item.image} |`
+  ),
+  '',
+  '## RSS URLs',
+  '',
+  ...results
+    .filter((item) => item.rssUrl)
+    .map((item) => `- ${item.name}: ${item.rssUrl}`),
+  '',
+].join('\n');
+
+if (process.env.GITHUB_STEP_SUMMARY) {
+  appendFileSync(
+    process.env.GITHUB_STEP_SUMMARY,
+    `${summary}\n`
+  );
+}
+
+// تعیین نتیجه نهایی Workflow
+if (failed > 0 || partial > 0) {
+  console.error('\n❌ Source check completed with errors.');
+  process.exitCode = 1;
+} else {
+  console.log('\n✅ All active sources passed.');
+}
