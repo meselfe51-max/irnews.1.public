@@ -1,8 +1,11 @@
 {
   "name": "news-worker",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
+  "engines": { "node": ">=20" },
   "dependencies": {
-    "postgres": "^3.4.4"
+    "postgres": "^3.4.5",
+    "fast-xml-parser": "^4.5.0"
   }
 }
