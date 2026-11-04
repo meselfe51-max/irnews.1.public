@@ -3,6 +3,12 @@ name: Analyze Pending News
 
 on:
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'اجرای آزمایشی بدون تغییر دیتابیس'
+        required: true
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -14,7 +20,7 @@ concurrency:
 jobs:
   analyze:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
 
     steps:
       - name: Checkout repository
@@ -31,4 +37,5 @@ jobs:
       - name: Analyze pending articles
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: node src/analyze-pending.mjs
