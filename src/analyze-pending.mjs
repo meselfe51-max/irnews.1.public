@@ -3,6 +3,22 @@ import postgres from 'postgres';
 
 const DATABASE_URL = process.env.DATABASE_URL;
 
+// حالت پیش‌فرض همیشه آزمایشی است.
+// فقط با DRY_RUN=false پردازش واقعی انجام می‌شود.
+const DRY_RUN = process.env.DRY_RUN !== 'false';
+
+const BATCH_SIZE = 50;
+const REFERENCE_LIMIT = 3000;
+const MIN_CATEGORY_SCORE = 2;
+
+const STOP_WORDS = new Set([
+  'از', 'به', 'در', 'با', 'برای', 'که', 'را',
+  'و', 'این', 'آن', 'یک', 'تا', 'اما', 'نیز',
+  'شد', 'شود', 'کرد', 'کرده', 'است', 'هست',
+  'می', 'خواهد', 'بر', 'پس', 'هم', 'هر',
+  'چه', 'چند', 'روی', 'بین', 'بعد', 'قبل',
+]);
+
 if (!DATABASE_URL) {
   throw new Error('DATABASE_URL تنظیم نشده است.');
 }
@@ -14,19 +30,6 @@ const sql = postgres(DATABASE_URL, {
   prepare: false,
 });
 
-const BATCH_SIZE = 50;
-const REFERENCE_LIMIT = 3000;
-const DUPLICATE_THRESHOLD = 0.82;
-const MIN_TITLE_TOKENS = 4;
-
-const STOP_WORDS = new Set([
-  'از', 'به', 'در', 'با', 'برای', 'که', 'را',
-  'و', 'این', 'آن', 'یک', 'تا', 'اما', 'نیز',
-  'شد', 'شود', 'کرد', 'کرده', 'است', 'هست',
-  'می', 'خواهد', 'بر', 'پس', 'هم', 'هر',
-  'چه', 'چند', 'روی', 'بین', 'بعد', 'قبل',
-]);
-
 function normalizeText(value) {
   return String(value || '')
     .replace(/ي/g, 'ی')
@@ -34,7 +37,7 @@ function normalizeText(value) {
     .replace(/[ۀة]/g, 'ه')
     .replace(/[\u064B-\u065F\u0670]/g, '')
     .replace(/[\u200c\u200f]/g, ' ')
-    .replace(/[ـ]/g, '')
+    .replace(/ـ/g, '')
     .replace(/[^\p{L}\p{N}\s]/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim()
@@ -67,10 +70,16 @@ function similarity(first, second) {
   return union ? intersection / union : 0;
 }
 
+function containsPhrase(text, phrase) {
+  const normalizedText = ` ${normalizeText(text)} `;
+  const normalizedPhrase = ` ${normalizeText(phrase)} `;
+
+  return normalizedPhrase.trim().length > 0 &&
+    normalizedText.includes(normalizedPhrase);
+}
+
 function classifyArticle(article, categories) {
-  const text = normalizeText(
-    `${article.title} ${article.body_original || ''}`
-  );
+  const content = `${article.title || ''} ${article.body_original || ''}`;
 
   const results = [];
 
@@ -83,24 +92,14 @@ function classifyArticle(article, categories) {
     const matched = [];
 
     for (const keyword of keywords) {
-      const normalized = normalizeText(keyword);
+      if (!containsPhrase(content, keyword)) continue;
 
-      if (!normalized || normalized.length < 2) continue;
+      const weight = normalizeText(keyword).includes(' ')
+        ? 3
+        : 1;
 
-      const escaped = normalized.replace(
-        /[.*+?^${}()|[\]\\]/g,
-        '\\$&'
-      );
-
-      const pattern = new RegExp(
-        `(^| )${escaped}( |$)`,
-        'u'
-      );
-
-      if (pattern.test(text)) {
-        score += normalized.includes(' ') ? 3 : 1;
-        matched.push(keyword);
-      }
+      score += weight;
+      matched.push(keyword);
     }
 
     if (score > 0) {
@@ -115,66 +114,66 @@ function classifyArticle(article, categories) {
 
   results.sort((a, b) => b.score - a.score);
 
-  if (!results.length) {
+  if (!results.length || results[0].score < MIN_CATEGORY_SCORE) {
     return {
       categoryId: null,
-      matches: [],
+      matches: results.slice(0, 3),
+      reason: 'امتیاز کافی برای دسته‌بندی وجود ندارد',
     };
   }
 
   const best = results[0];
   const second = results[1];
 
-  // If two categories have very close scores,
-  // do not assign an uncertain category automatically.
   if (second && best.score - second.score < 2) {
     return {
       categoryId: null,
       matches: results.slice(0, 3),
+      reason: 'امتیاز دسته‌های برتر به یکدیگر نزدیک است',
     };
   }
 
   return {
     categoryId: best.id,
     matches: results.slice(0, 3),
+    reason: 'دسته‌بندی با امتیاز کافی',
   };
 }
 
 function determinePriority(article) {
-  const title = normalizeText(article.title);
+  const title = article.title || '';
 
   const breaking = [
     'خبر فوری',
     'فوری',
-    'لحظه ای',
+    'لحظه به لحظه',
+    'آخرین لحظات',
   ];
 
   const veryHigh = [
-    'انفجار',
-    'زلزله',
-    'سیل',
-    'آتش سوزی',
     'وضعیت اضطراری',
+    'حمله نظامی',
+    'انفجار',
+    'زلزله شدید',
   ];
 
   const high = [
     'هشدار',
-    'تعطیلی',
+    'تعطیلی سراسری',
     'تصمیم مهم',
-    'افزایش قیمت',
-    'کاهش قیمت',
     'تصویب',
+    'استیضاح',
   ];
 
-  if (breaking.some(word => title.includes(word))) {
+  if (breaking.some(word => containsPhrase(title, word))) {
     return { score: 100, level: 'breaking' };
   }
 
-  if (veryHigh.some(word => title.includes(word))) {
+  if (veryHigh.some(word => containsPhrase(title, word))) {
     return { score: 80, level: 'very_high' };
   }
 
-  if (high.some(word => title.includes(word))) {
+  if (high.some(word => containsPhrase(title, word))) {
     return { score: 60, level: 'high' };
   }
 
@@ -184,20 +183,22 @@ function determinePriority(article) {
 function findPossibleDuplicate(article, references) {
   const titleTokens = tokenize(article.title);
 
-  if (titleTokens.length < MIN_TITLE_TOKENS) {
-    return null;
-  }
+  if (titleTokens.length < 3) return null;
 
   let bestMatch = null;
   let bestScore = 0;
 
   for (const candidate of references) {
     if (
-      candidate.id === article.id ||
-      candidate.source_id === article.source_id
+      String(candidate.id) === String(article.id) ||
+      String(candidate.source_id) === String(article.source_id)
     ) {
       continue;
     }
+
+    const exactTitle =
+      normalizeText(article.title) ===
+      normalizeText(candidate.title);
 
     const titleScore = similarity(
       article.title,
@@ -208,10 +209,6 @@ function findPossibleDuplicate(article, references) {
       article.body_original,
       candidate.body_original
     );
-
-    const exactTitle =
-      normalizeText(article.title) ===
-      normalizeText(candidate.title);
 
     const score = exactTitle
       ? 1
@@ -238,149 +235,274 @@ function findPossibleDuplicate(article, references) {
   return bestMatch;
 }
 
+async function loadBatch(connection, lastId) {
+  if (lastId === null) {
+    return connection`
+      SELECT
+        id,
+        source_id,
+        title,
+        body_original,
+        category_id
+      FROM articles
+      WHERE status = 'pending'
+      ORDER BY id ASC
+      LIMIT ${BATCH_SIZE}
+      ${DRY_RUN ? connection`` : connection`FOR UPDATE`}
+    `;
+  }
+
+  return connection`
+    SELECT
+      id,
+      source_id,
+      title,
+      body_original,
+      category_id
+    FROM articles
+    WHERE status = 'pending'
+      AND id > ${lastId}
+    ORDER BY id ASC
+    LIMIT ${BATCH_SIZE}
+    ${DRY_RUN ? connection`` : connection`FOR UPDATE`}
+  `;
+}
+
+async function processBatch(batch, categories, references, connection) {
+  const report = {
+    processed: 0,
+    categorized: 0,
+    uncategorized: 0,
+    duplicates: 0,
+    priorities: {
+      breaking: 0,
+      very_high: 0,
+      high: 0,
+      normal: 0,
+    },
+  };
+
+  for (const article of batch) {
+    const classification = classifyArticle(article, categories);
+    const priority = determinePriority(article);
+
+    const duplicate = findPossibleDuplicate(
+      article,
+      references
+    );
+
+    if (!DRY_RUN) {
+      const updated = await connection`
+        UPDATE articles
+        SET
+          category_id = COALESCE(
+            ${classification.categoryId},
+            category_id
+          ),
+          priority_score = ${priority.score},
+          priority_level = ${priority.level},
+          verification = COALESCE(
+            verification,
+            'unverified'
+          ),
+          status = 'ready_for_review'
+        WHERE id = ${article.id}
+          AND status = 'pending'
+        RETURNING id
+      `;
+
+      if (!updated.length) continue;
+
+      if (duplicate) {
+        await connection`
+          INSERT INTO logs (
+            level,
+            scope,
+            message,
+            meta,
+            created_at
+          )
+          VALUES (
+            'warning',
+            'deduplication',
+            'احتمال خبر تکراری؛ نیازمند بررسی مدیر',
+            ${JSON.stringify({
+              article_id: article.id,
+              candidate_id: duplicate.id,
+              source_id: article.source_id,
+              candidate_source_id: duplicate.source_id,
+              similarity: duplicate.score,
+            })}::jsonb,
+            NOW()
+          )
+        `;
+      }
+    }
+
+    report.processed++;
+
+    if (classification.categoryId !== null) {
+      report.categorized++;
+    } else {
+      report.uncategorized++;
+    }
+
+    report.priorities[priority.level]++;
+
+    if (duplicate) report.duplicates++;
+
+    console.log(
+      JSON.stringify({
+        id: article.id,
+        title: article.title,
+        category: classification.categoryId,
+        category_reason: classification.reason,
+        category_matches: classification.matches,
+        priority: priority.level,
+        possible_duplicate: duplicate,
+        mode: DRY_RUN ? 'DRY_RUN' : 'LIVE',
+      })
+    );
+  }
+
+  return report;
+}
+
+function mergeReport(total, current) {
+  total.processed += current.processed;
+  total.categorized += current.categorized;
+  total.uncategorized += current.uncategorized;
+  total.duplicates += current.duplicates;
+
+  for (const key of Object.keys(total.priorities)) {
+    total.priorities[key] += current.priorities[key];
+  }
+}
+
 async function main() {
+  const total = {
+    processed: 0,
+    categorized: 0,
+    uncategorized: 0,
+    duplicates: 0,
+    priorities: {
+      breaking: 0,
+      very_high: 0,
+      high: 0,
+      normal: 0,
+    },
+  };
+
+  let lastId = null;
+  let batchNumber = 0;
+
+  console.log('================================');
+  console.log(`حالت اجرا: ${DRY_RUN ? 'آزمایشی؛ بدون تغییر دیتابیس' : 'واقعی'}`);
+  console.log(`اندازه هر بسته: ${BATCH_SIZE}`);
+  console.log('================================');
+
   try {
-    const result = await sql.begin(async tx => {
-      const categories = await tx`
-        SELECT id, slug, keywords
-        FROM categories
-        WHERE enabled = true
-        ORDER BY id
-      `;
+    const categories = await sql`
+      SELECT id, slug, keywords
+      FROM categories
+      WHERE enabled = true
+      ORDER BY id
+    `;
 
-      const articles = await tx`
-        SELECT
-          id,
-          source_id,
-          title,
-          body_original,
-          category_id
-        FROM articles
-        WHERE status = 'pending'
-        ORDER BY fetched_at ASC, id ASC
-        LIMIT ${BATCH_SIZE}
-        FOR UPDATE SKIP LOCKED
-      `;
+    if (!categories.length) {
+      throw new Error('هیچ دسته فعال خبری در دیتابیس وجود ندارد.');
+    }
 
-      console.log(`تعداد اخبار انتخاب‌شده: ${articles.length}`);
+    while (true) {
+      let batch;
 
-      if (!articles.length) {
-        return {
-          processed: 0,
-          duplicates: 0,
-          categorized: 0,
-        };
+      if (DRY_RUN) {
+        batch = await loadBatch(sql, lastId);
+      } else {
+        batch = await sql.begin(async tx => {
+          const selected = await loadBatch(tx, lastId);
+
+          if (!selected.length) return [];
+
+          const references = await tx`
+            SELECT
+              id,
+              source_id,
+              title,
+              body_original
+            FROM articles
+            WHERE status <> 'rejected'
+              AND deleted_at IS NULL
+            ORDER BY fetched_at DESC, id DESC
+            LIMIT ${REFERENCE_LIMIT}
+          `;
+
+          const currentReport = await processBatch(
+            selected,
+            categories,
+            references,
+            tx
+          );
+
+          mergeReport(total, currentReport);
+
+          return selected;
+        });
       }
 
-      const references = await tx`
-        SELECT
-          id,
-          source_id,
-          title,
-          body_original
-        FROM articles
-        WHERE status <> 'rejected'
-          AND deleted_at IS NULL
-        ORDER BY fetched_at DESC, id DESC
-        LIMIT ${REFERENCE_LIMIT}
-      `;
+      if (!batch.length) break;
 
-      let processed = 0;
-      let duplicates = 0;
-      let categorized = 0;
-
-      for (const article of articles) {
-        const classification = classifyArticle(
-          article,
-          categories
-        );
-
-        const priority = determinePriority(article);
-
-        const duplicate = findPossibleDuplicate(
-          article,
-          references
-        );
-
-        const updated = await tx`
-          UPDATE articles
-          SET
-            category_id = COALESCE(
-              ${classification.categoryId},
-              category_id
-            ),
-            priority_score = ${priority.score},
-            priority_level = ${priority.level},
-            verification = COALESCE(
-              verification,
-              'unverified'
-            ),
-            status = 'ready_for_review'
-          WHERE id = ${article.id}
-            AND status = 'pending'
-          RETURNING id
+      if (DRY_RUN) {
+        const references = await sql`
+          SELECT
+            id,
+            source_id,
+            title,
+            body_original
+          FROM articles
+          WHERE status <> 'rejected'
+            AND deleted_at IS NULL
+          ORDER BY fetched_at DESC, id DESC
+          LIMIT ${REFERENCE_LIMIT}
         `;
 
-        if (!updated.length) continue;
-
-        if (classification.categoryId !== null) {
-          categorized++;
-        }
-
-        if (duplicate) {
-          duplicates++;
-
-          await tx`
-            INSERT INTO logs (
-              level,
-              scope,
-              message,
-              meta,
-              created_at
-            )
-            VALUES (
-              'warning',
-              'deduplication',
-              'احتمال خبر تکراری؛ نیازمند بررسی مدیر',
-              ${JSON.stringify({
-                article_id: article.id,
-                candidate_id: duplicate.id,
-                source_id: article.source_id,
-                candidate_source_id: duplicate.source_id,
-                similarity: duplicate.score,
-              })}::jsonb,
-              NOW()
-            )
-          `;
-        }
-
-        processed++;
-
-        console.log(
-          `خبر ${article.id}: ` +
-          `دسته=${classification.categoryId ?? 'نامشخص'}، ` +
-          `اولویت=${priority.level}، ` +
-          `تکراری=${duplicate ? 'احتمالی' : 'خیر'}`
+        const currentReport = await processBatch(
+          batch,
+          categories,
+          references,
+          sql
         );
+
+        mergeReport(total, currentReport);
       }
 
-      return {
-        processed,
-        duplicates,
-        categorized,
-        remaining: Math.max(0, articles.length - processed),
-      };
-    });
+      lastId = batch[batch.length - 1].id;
+      batchNumber++;
 
-    console.log('\nنتیجه نهایی:');
-    console.log(JSON.stringify(result, null, 2));
+      console.log(
+        `بسته ${batchNumber} تمام شد؛ ` +
+        `تعداد بررسی‌شده: ${total.processed}`
+      );
+    }
 
+    console.log('\n========== نتیجه نهایی ==========');
+    console.log(JSON.stringify(total, null, 2));
+
+    if (DRY_RUN) {
+      console.log(
+        '\nحالت آزمایشی بود؛ هیچ تغییری در دیتابیس ثبت نشد.'
+      );
+    } else {
+      console.log(
+        '\nپردازش واقعی با موفقیت به پایان رسید.'
+      );
+    }
   } finally {
     await sql.end({ timeout: 5 });
   }
 }
 
 main().catch(error => {
-  console.error('خطای پردازش:', error.message);
+  console.error('خطای پردازش:', error);
   process.exitCode = 1;
 });
