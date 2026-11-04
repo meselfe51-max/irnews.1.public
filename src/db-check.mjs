@@ -1,40 +1,83 @@
 import postgres from 'postgres';
 
 const url = process.env.DATABASE_URL;
+
 if (!url) {
-  console.error('❌ DATABASE_URL تنظیم نشده؛ اسم Secret را چک کنید');
+  console.error('DATABASE_URL تنظیم نشده است.');
   process.exit(1);
 }
 
-const sql = postgres(url, { ssl: 'require', max: 1, prepare: false, connect_timeout: 15 });
+const sql = postgres(url, {
+  ssl: 'require',
+  max: 1,
+  prepare: false,
+  connect_timeout: 15
+});
 
 const EXPECTED = [
-  'admin_sessions', 'admins', 'ai_usage', 'article_versions', 'articles',
-  'categories', 'events', 'login_attempts', 'logs', 'settings', 'sources',
+  'admin_sessions',
+  'admins',
+  'ai_usage',
+  'article_versions',
+  'articles',
+  'categories',
+  'events',
+  'login_attempts',
+  'logs',
+  'settings',
+  'sources'
 ];
 
 try {
-  const rows = await sql`select table_name from information_schema.tables where table_schema = 'public' order by 1`;
-  const have = rows.map((r) => r.table_name);
-  console.log('جدول‌های موجود:', have.join(', ') || '(هیچ)');
+  const rows = await sql`
+    SELECT table_name
+    FROM information_schema.tables
+    WHERE table_schema = 'public'
+    ORDER BY table_name
+  `;
 
-  const missing = EXPECTED.filter((t) => !have.includes(t));
-  console.log(missing.length ? `❌ جدول‌های ناموجود: ${missing.join(', ')}` : '✅ هر ۱۱ جدول وجود دارد');
+  const existing = rows.map(row => row.table_name);
 
-  if (!missing.length) {
-    const [c] = await sql`
-      select
-        (select count(*)::int from sources) as sources,
-        (select count(*)::int from categories) as categories,
-        (select count(*)::int from settings) as settings,
-        (select count(*)::int from articles) as articles
+  console.log('جدول‌های موجود:');
+  console.log(existing.join(', '));
+
+  const missing = EXPECTED.filter(
+    table => !existing.includes(table)
+  );
+
+  if (missing.length > 0) {
+    console.error('\nجدول‌های ناموجود:');
+    console.error(missing.join(', '));
+
+    process.exitCode = 1;
+
+  } else {
+    console.log('\nSUCCESS: هر ۱۱ جدول وجود دارند.');
+
+    const [counts] = await sql`
+      SELECT
+        (SELECT COUNT(*)::int FROM sources) AS sources,
+        (SELECT COUNT(*)::int FROM categories) AS categories,
+        (SELECT COUNT(*)::int FROM settings) AS settings,
+        (SELECT COUNT(*)::int FROM articles) AS articles
     `;
-    console.log('تعداد ردیف‌ها:', JSON.stringify(c));
+
+    console.log('\nتعداد رکوردها:');
+    console.log(JSON.stringify(counts, null, 2));
   }
-} catch (err) {
-  const msg = String(err.message || '').replace(/postgres(ql)?:\/\/\S+/g, '***');
-  console.error('❌ اتصال یا کوئری شکست خورد:', err.code || err.name, '-', msg);
+
+} catch (error) {
+  const message = String(error.message || '')
+    .replace(/postgres(ql)?:\/\/\S+/g, '***');
+
+  console.error(
+    'خطای دیتابیس:',
+    error.code || error.name,
+    message
+  );
+
   process.exitCode = 1;
+
 } finally {
   await sql.end({ timeout: 5 });
 }
