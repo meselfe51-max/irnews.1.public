@@ -1,12 +1,16 @@
-
+```yaml
 name: Test News RSS
 
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   test-rss:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout repository
@@ -18,214 +22,233 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: |
-          pip install requests feedparser lxml beautifulsoup4
+        run: pip install requests feedparser beautifulsoup4
 
-      - name: Discover Tasnim RSS feeds
-        id: tasnim
+      - name: Discover and test all RSS feeds
         run: |
           python - <<'PY'
           import requests
           import feedparser
           from bs4 import BeautifulSoup
           from urllib.parse import urljoin, urlparse
+          from collections import Counter
           import re
 
-          page_url = "https://www.tasnimnews.ir/fa/rss"
-          headers = {"User-Agent": "Mozilla/5.0"}
+          SOURCES = {
+              "IRNA": "https://www.irna.ir/rss",
+              "ISNA": "https://www.isna.ir/rss",
+              "Mehr": "https://www.mehrnews.com/rss",
+              "Tasnim": "https://www.tasnimnews.ir/fa/rss",
+              "Khabaronline": "https://www.khabaronline.ir/rss",
+          }
 
-          candidates = set()
+          HEADERS = {
+              "User-Agent": "Mozilla/5.0 (compatible; NewsRSSChecker/2.0)"
+          }
 
-          try:
-              response = requests.get(
-                  page_url,
-                  headers=headers,
-                  timeout=30
+          MAX_FEEDS_PER_SOURCE = 25
+          TIMEOUT = 25
+
+          session = requests.Session()
+          session.headers.update(HEADERS)
+
+          total_valid = 0
+          total_invalid = 0
+          total_categories = 0
+
+          def normalize_url(url):
+              parsed = urlparse(url)
+              return parsed._replace(fragment="").geturl().rstrip("/")
+
+          def get_category_labels(entry):
+              labels = []
+
+              for tag in entry.get("tags", []):
+                  value = tag.get("term", "")
+                  if value:
+                      labels.append(value.strip())
+
+              for field in ("category", "dc_subject"):
+                  value = entry.get(field)
+
+                  if isinstance(value, str) and value.strip():
+                      labels.append(value.strip())
+
+              return list(dict.fromkeys(labels))
+
+          def is_xml_feed(response):
+              content = response.content.lstrip()[:2000].lower()
+              content_type = response.headers.get(
+                  "Content-Type", ""
+              ).lower()
+
+              if "text/html" in content_type:
+                  return False
+
+              return (
+                  "xml" in content_type
+                  or content.startswith(b"<?xml")
+                  or b"<rss" in content
+                  or b"<feed" in content
+                  or b"<rdf:rdf" in content
               )
-              response.raise_for_status()
 
-              soup = BeautifulSoup(response.text, "html.parser")
-
-              print("PAGE TITLE:",
-                    soup.title.get_text(strip=True) if soup.title else "N/A")
-
-              print("\nDISCOVERED LINKS:")
+          def discover_links(page_url, html):
+              soup = BeautifulSoup(html, "html.parser")
+              candidates = {}
 
               for tag in soup.find_all(["a", "link"]):
-                  href = tag.get("href", "")
-                  text = tag.get_text(" ", strip=True)
-                  rel = tag.get("rel", [])
+                  href = tag.get("href", "").strip()
 
                   if not href:
                       continue
 
-                  if (
-                      "rss" in href.lower()
-                      or "feed" in href.lower()
-                      or "xml" in href.lower()
-                      or "rss" in text.lower()
-                      or "rss" in " ".join(rel).lower()
-                  ):
-                      candidates.add(urljoin(page_url, href))
+                  text = tag.get_text(" ", strip=True)
+                  rel = tag.get("rel", [])
 
-              print("\nTESTING DISCOVERED FEEDS:")
+                  if isinstance(rel, str):
+                      rel = [rel]
 
-              valid = []
+                  searchable = (
+                      href.lower() + " " +
+                      text.lower() + " " +
+                      " ".join(rel).lower()
+                  )
 
-              for url in sorted(candidates):
-                  try:
-                      r = requests.get(
-                          url,
-                          headers=headers,
-                          timeout=20
-                      )
+                  is_candidate = (
+                      "rss" in searchable
+                      or "feed" in searchable
+                      or ".xml" in searchable
+                      or "خوراک" in searchable
+                  )
 
-                      feed = feedparser.parse(r.content)
+                  if not is_candidate:
+                      continue
 
-                      is_xml = (
-                          "xml" in r.headers.get("Content-Type", "").lower()
-                          or r.content.lstrip().startswith(b"<?xml")
-                          or b"<rss" in r.content[:1000].lower()
-                          or b"<feed" in r.content[:1000].lower()
-                      )
+                  url = normalize_url(urljoin(page_url, href))
 
-                      if (
-                          r.status_code == 200
-                          and is_xml
-                          and len(feed.entries) > 0
-                      ):
-                          valid.append(url)
-                          print("\nVALID RSS:", url)
-                          print("Entries:", len(feed.entries))
-                          print("Latest:", feed.entries[0].get("title", "N/A"))
-                      else:
-                          print("\nINVALID:", url)
-                          print("HTTP:", r.status_code)
-                          print("Content-Type:",
-                                r.headers.get("Content-Type"))
-                          print("Entries:", len(feed.entries))
+                  if urlparse(url).scheme not in ("http", "https"):
+                      continue
 
-                  except Exception as e:
-                      print("\nERROR:", url, repr(e))
+                  if url == normalize_url(page_url):
+                      continue
 
-              if valid:
-                  selected = valid[0]
-                  print("\nSELECTED TAS NIM RSS:", selected)
-                  with open("tasnim_rss.txt", "w") as f:
-                      f.write(selected)
-              else:
-                  print("\nNo valid RSS feed discovered.")
-                  open("tasnim_rss.txt", "w").close()
+                  candidates[url] = text or "عنوان نامشخص"
 
-          except Exception as e:
-              print("DISCOVERY FAILED:", repr(e))
-              open("tasnim_rss.txt", "w").close()
-          PY
+              return candidates
 
-      - name: Test RSS feeds
-        run: |
-          python - <<'PY'
-          import requests
-          import feedparser
-          import re
-          import os
+          def inspect_feed(source, label, url):
+              global total_valid, total_invalid, total_categories
 
-          FEEDS = {
-              "IRNA": "https://www.irna.ir/rss",
-              "ISNA": "https://www.isna.ir/rss",
-              "Mehr": "https://www.mehrnews.com/rss",
-              "Fars": "https://farsnews.ir/rss",
-              "Khabaronline": "https://www.khabaronline.ir/rss",
-          }
-
-          if os.path.exists("tasnim_rss.txt"):
-              with open("tasnim_rss.txt") as f:
-                  tasnim_url = f.read().strip()
-
-              if tasnim_url:
-                  FEEDS["Tasnim"] = tasnim_url
-
-          headers = {
-              "User-Agent": "Mozilla/5.0 (compatible; RSSChecker/1.0)"
-          }
-
-          success = 0
-          failed = 0
-
-          def find_image(entry):
-              for field in ("media_content", "media_thumbnail"):
-                  for item in entry.get(field, []):
-                      if item.get("url"):
-                          return item["url"]
-
-              for link in entry.get("links", []):
-                  if link.get("type", "").startswith("image/"):
-                      return link.get("href")
-
-              for enclosure in entry.get("enclosures", []):
-                  if enclosure.get("type", "").startswith("image/"):
-                      return enclosure.get("href")
-
-              content = entry.get("summary", "")
-              match = re.search(
-                  r'<img[^>]+src=["\']([^"\']+)["\']',
-                  content,
-                  re.IGNORECASE
-              )
-
-              return match.group(1) if match else None
-
-          for name, url in FEEDS.items():
-              print("\n" + "=" * 55)
-              print("Testing:", name)
+              print("\n" + "-" * 70)
+              print("SOURCE:", source)
+              print("FEED LABEL:", label)
               print("URL:", url)
 
               try:
-                  response = requests.get(
-                      url,
-                      headers=headers,
-                      timeout=25
-                  )
+                  response = session.get(url, timeout=TIMEOUT)
+                  print("HTTP:", response.status_code)
+                  print("Content-Type:",
+                        response.headers.get("Content-Type", "N/A"))
 
-                  print("HTTP Status:", response.status_code)
                   response.raise_for_status()
 
-                  content_type = response.headers.get(
-                      "Content-Type", ""
-                  ).lower()
-
-                  if "html" in content_type:
-                      raise Exception("Server returned HTML instead of RSS")
+                  if not is_xml_feed(response):
+                      print("RESULT: INVALID - Not an XML RSS/Atom feed")
+                      total_invalid += 1
+                      return
 
                   feed = feedparser.parse(response.content)
 
                   if not feed.entries:
-                      raise Exception(
-                          str(feed.get("bozo_exception", "No RSS entries"))
-                      )
+                      print("RESULT: INVALID - No entries")
+                      if feed.get("bozo_exception"):
+                          print("PARSER ERROR:", feed.bozo_exception)
+                      total_invalid += 1
+                      return
 
-                  print("RSS: VALID")
-                  print("Entries:", len(feed.entries))
+                  total_valid += 1
+                  print("RESULT: VALID")
+                  print("ENTRIES:", len(feed.entries))
 
-                  latest = feed.entries[0]
+                  category_counter = Counter()
 
-                  print("Latest title:", latest.get("title", "N/A"))
-                  print("Latest link:", latest.get("link", "N/A"))
-                  print("Published:", latest.get("published", "N/A"))
-                  print("Image URL:", find_image(latest) or "NOT FOUND")
+                  for entry in feed.entries:
+                      for category in get_category_labels(entry):
+                          category_counter[category] += 1
 
-                  success += 1
-                  print("RESULT: SUCCESS")
+                  if category_counter:
+                      total_categories += 1
+                      print("\nCATEGORIES FOUND IN RSS:")
+
+                      for category, count in category_counter.most_common(20):
+                          print(f"  - {category}: {count}")
+                  else:
+                      print("\nCATEGORIES FOUND IN RSS: NONE")
+
+                  print("\nSAMPLE ARTICLES:")
+
+                  for entry in feed.entries[:3]:
+                      print("  TITLE:", entry.get("title", "N/A"))
+                      print("  LINK:", entry.get("link", "N/A"))
+
+                      categories = get_category_labels(entry)
+                      print("  CATEGORIES:",
+                            ", ".join(categories) if categories else "NONE")
 
               except Exception as error:
-                  failed += 1
-                  print("RESULT: FAILED")
-                  print("Error:", repr(error))
+                  total_invalid += 1
+                  print("RESULT: ERROR")
+                  print("ERROR:", repr(error))
 
-          print("\n" + "=" * 55)
+          for source, page_url in SOURCES.items():
+              print("\n\n" + "=" * 70)
+              print("DISCOVERING:", source)
+              print("PAGE:", page_url)
+              print("=" * 70)
+
+              try:
+                  page_response = session.get(
+                      page_url,
+                      timeout=TIMEOUT
+                  )
+
+                  print("DISCOVERY HTTP:", page_response.status_code)
+                  page_response.raise_for_status()
+
+                  candidates = discover_links(
+                      page_response.url,
+                      page_response.text
+                  )
+
+                  print("DISCOVERED CATEGORY/FEED LINKS:",
+                        len(candidates))
+
+                  for label, url in list(candidates.items())[
+                      :MAX_FEEDS_PER_SOURCE
+                  ]:
+                      print("  -", label, "=>", url)
+
+                  # Test the main feed first.
+                  inspect_feed(source, "MAIN RSS", page_response.url)
+
+                  # Test every discovered feed separately.
+                  for url, label in list(candidates.items())[
+                      :MAX_FEEDS_PER_SOURCE
+                  ]:
+                      inspect_feed(source, label, url)
+
+              except Exception as error:
+                  print("DISCOVERY FAILED:", source, repr(error))
+                  total_invalid += 1
+
+          print("\n\n" + "=" * 70)
           print("FINAL SUMMARY")
-          print("Successful sources:", success)
-          print("Failed sources:", failed)
-          print("Total tested:", success + failed)
-          print("=" * 55)
+          print("=" * 70)
+          print("VALID FEEDS:", total_valid)
+          print("INVALID FEEDS:", total_invalid)
+          print("FEEDS CONTAINING CATEGORY METADATA:", total_categories)
+          print("TOTAL TESTED:", total_valid + total_invalid)
+          print("=" * 70)
           PY
+```
