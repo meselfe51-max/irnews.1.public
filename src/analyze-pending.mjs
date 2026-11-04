@@ -1,21 +1,31 @@
 
 import postgres from 'postgres';
 
-const databaseUrl = process.env.DATABASE_URL;
+const DATABASE_URL = process.env.DATABASE_URL;
 
-if (!databaseUrl) {
+if (!DATABASE_URL) {
   throw new Error('DATABASE_URL تنظیم نشده است.');
 }
 
-const sql = postgres(databaseUrl, {
+const sql = postgres(DATABASE_URL, {
   ssl: 'require',
   max: 1,
   connect_timeout: 15,
   prepare: false,
 });
 
-const BATCH_SIZE = 200;
-const REFERENCE_LIMIT = 5000;
+const BATCH_SIZE = 50;
+const REFERENCE_LIMIT = 3000;
+const DUPLICATE_THRESHOLD = 0.82;
+const MIN_TITLE_TOKENS = 4;
+
+const STOP_WORDS = new Set([
+  'از', 'به', 'در', 'با', 'برای', 'که', 'را',
+  'و', 'این', 'آن', 'یک', 'تا', 'اما', 'نیز',
+  'شد', 'شود', 'کرد', 'کرده', 'است', 'هست',
+  'می', 'خواهد', 'بر', 'پس', 'هم', 'هر',
+  'چه', 'چند', 'روی', 'بین', 'بعد', 'قبل',
+]);
 
 function normalizeText(value) {
   return String(value || '')
@@ -23,7 +33,8 @@ function normalizeText(value) {
     .replace(/ك/g, 'ک')
     .replace(/[ۀة]/g, 'ه')
     .replace(/[\u064B-\u065F\u0670]/g, '')
-    .replace(/\u200c/g, ' ')
+    .replace(/[\u200c\u200f]/g, ' ')
+    .replace(/[ـ]/g, '')
     .replace(/[^\p{L}\p{N}\s]/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim()
@@ -31,23 +42,17 @@ function normalizeText(value) {
 }
 
 function tokenize(value) {
-  const stopWords = new Set([
-    'از', 'به', 'در', 'با', 'برای', 'که',
-    'را', 'و', 'این', 'آن', 'یک', 'تا',
-    'اما', 'نیز', 'شد', 'شود', 'کرد',
-    'کرده', 'است', 'هست', 'می', 'خواهد',
-  ]);
-
-  return new Set(
-    normalizeText(value)
-      .split(' ')
-      .filter(word => word.length > 1 && !stopWords.has(word))
-  );
+  return normalizeText(value)
+    .split(' ')
+    .filter(word =>
+      word.length > 1 &&
+      !STOP_WORDS.has(word)
+    );
 }
 
 function similarity(first, second) {
-  const a = tokenize(first);
-  const b = tokenize(second);
+  const a = new Set(tokenize(first));
+  const b = new Set(tokenize(second));
 
   if (!a.size || !b.size) return 0;
 
@@ -62,13 +67,12 @@ function similarity(first, second) {
   return union ? intersection / union : 0;
 }
 
-function findCategory(article, categories) {
+function classifyArticle(article, categories) {
   const text = normalizeText(
     `${article.title} ${article.body_original || ''}`
   );
 
-  let bestCategory = null;
-  let bestScore = 0;
+  const results = [];
 
   for (const category of categories) {
     const keywords = Array.isArray(category.keywords)
@@ -76,64 +80,101 @@ function findCategory(article, categories) {
       : [];
 
     let score = 0;
+    const matched = [];
 
     for (const keyword of keywords) {
-      const normalizedKeyword = normalizeText(keyword);
+      const normalized = normalizeText(keyword);
 
-      if (
-        normalizedKeyword.length >= 2 &&
-        text.includes(normalizedKeyword)
-      ) {
-        score++;
+      if (!normalized || normalized.length < 2) continue;
+
+      const escaped = normalized.replace(
+        /[.*+?^${}()|[\]\\]/g,
+        '\\$&'
+      );
+
+      const pattern = new RegExp(
+        `(^| )${escaped}( |$)`,
+        'u'
+      );
+
+      if (pattern.test(text)) {
+        score += normalized.includes(' ') ? 3 : 1;
+        matched.push(keyword);
       }
     }
 
-    if (score > bestScore) {
-      bestScore = score;
-      bestCategory = category.id;
+    if (score > 0) {
+      results.push({
+        id: category.id,
+        slug: category.slug,
+        score,
+        matched,
+      });
     }
   }
 
-  return bestCategory;
+  results.sort((a, b) => b.score - a.score);
+
+  if (!results.length) {
+    return {
+      categoryId: null,
+      matches: [],
+    };
+  }
+
+  const best = results[0];
+  const second = results[1];
+
+  // If two categories have very close scores,
+  // do not assign an uncertain category automatically.
+  if (second && best.score - second.score < 2) {
+    return {
+      categoryId: null,
+      matches: results.slice(0, 3),
+    };
+  }
+
+  return {
+    categoryId: best.id,
+    matches: results.slice(0, 3),
+  };
 }
 
 function determinePriority(article) {
   const title = normalizeText(article.title);
 
-  const breakingWords = [
+  const breaking = [
     'خبر فوری',
     'فوری',
     'لحظه ای',
-    'فوریه',
   ];
 
-  const veryHighWords = [
-    'زلزله',
+  const veryHigh = [
     'انفجار',
+    'زلزله',
     'سیل',
     'آتش سوزی',
-    'بحران',
-    'اضطراری',
+    'وضعیت اضطراری',
   ];
 
-  const highWords = [
-    'تعطیلی',
+  const high = [
     'هشدار',
+    'تعطیلی',
     'تصمیم مهم',
     'افزایش قیمت',
     'کاهش قیمت',
     'تصویب',
   ];
 
-  if (breakingWords.some(word => title.includes(word))) {
+  if (breaking.some(word => title.includes(word))) {
     return { score: 100, level: 'breaking' };
   }
 
-  if (veryHighWords.some(word => title.includes(word))) {
+  if (veryHigh.some(word => title.includes(word))) {
     return { score: 80, level: 'very_high' };
   }
 
-  if (highWords.some(word => title.includes(word))) {
+  if (high.some(word => title.includes(word))) {
     return { score: 60, level: 'high' };
   }
 
@@ -141,9 +182,11 @@ function determinePriority(article) {
 }
 
 function findPossibleDuplicate(article, references) {
-  const title = normalizeText(article.title);
+  const titleTokens = tokenize(article.title);
 
-  if (!title) return null;
+  if (titleTokens.length < MIN_TITLE_TOKENS) {
+    return null;
+  }
 
   let bestMatch = null;
   let bestScore = 0;
@@ -156,39 +199,39 @@ function findPossibleDuplicate(article, references) {
       continue;
     }
 
-    const candidateTitle = normalizeText(candidate.title);
-
-    if (!candidateTitle) continue;
-
-    const exactTitle = title === candidateTitle;
-    const titleScore = similarity(article.title, candidate.title);
+    const titleScore = similarity(
+      article.title,
+      candidate.title
+    );
 
     const bodyScore = similarity(
       article.body_original,
       candidate.body_original
     );
 
-    const isLikelyDuplicate =
+    const exactTitle =
+      normalizeText(article.title) ===
+      normalizeText(candidate.title);
+
+    const score = exactTitle
+      ? 1
+      : titleScore * 0.65 + bodyScore * 0.35;
+
+    const likelyDuplicate =
       exactTitle ||
       (
-        tokenize(article.title).size >= 4 &&
-        titleScore >= 0.90 &&
-        bodyScore >= 0.72
+        titleScore >= 0.82 &&
+        bodyScore >= 0.65
       );
 
-    if (isLikelyDuplicate) {
-      const score = exactTitle
-        ? 1
-        : titleScore * 0.7 + bodyScore * 0.3;
+    if (likelyDuplicate && score > bestScore) {
+      bestScore = score;
 
-      if (score > bestScore) {
-        bestScore = score;
-        bestMatch = {
-          id: candidate.id,
-          source_id: candidate.source_id,
-          score: Number(score.toFixed(3)),
-        };
-      }
+      bestMatch = {
+        id: candidate.id,
+        source_id: candidate.source_id,
+        score: Number(score.toFixed(3)),
+      };
     }
   }
 
@@ -199,7 +242,7 @@ async function main() {
   try {
     const result = await sql.begin(async tx => {
       const categories = await tx`
-        SELECT id, name, slug, keywords
+        SELECT id, slug, keywords
         FROM categories
         WHERE enabled = true
         ORDER BY id
@@ -211,16 +254,15 @@ async function main() {
           source_id,
           title,
           body_original,
-          category_id,
-          verification
+          category_id
         FROM articles
         WHERE status = 'pending'
-        ORDER BY priority_score DESC NULLS LAST, fetched_at ASC
+        ORDER BY fetched_at ASC, id ASC
         LIMIT ${BATCH_SIZE}
         FOR UPDATE SKIP LOCKED
       `;
 
-      console.log(`اخبار در صف پردازش: ${articles.length}`);
+      console.log(`تعداد اخبار انتخاب‌شده: ${articles.length}`);
 
       if (!articles.length) {
         return {
@@ -231,9 +273,15 @@ async function main() {
       }
 
       const references = await tx`
-        SELECT id, source_id, title, body_original
+        SELECT
+          id,
+          source_id,
+          title,
+          body_original
         FROM articles
-        ORDER BY fetched_at DESC
+        WHERE status <> 'rejected'
+          AND deleted_at IS NULL
+        ORDER BY fetched_at DESC, id DESC
         LIMIT ${REFERENCE_LIMIT}
       `;
 
@@ -242,7 +290,11 @@ async function main() {
       let categorized = 0;
 
       for (const article of articles) {
-        const categoryId = findCategory(article, categories);
+        const classification = classifyArticle(
+          article,
+          categories
+        );
+
         const priority = determinePriority(article);
 
         const duplicate = findPossibleDuplicate(
@@ -250,19 +302,28 @@ async function main() {
           references
         );
 
-        await tx`
+        const updated = await tx`
           UPDATE articles
           SET
-            category_id = COALESCE(${categoryId}, category_id),
+            category_id = COALESCE(
+              ${classification.categoryId},
+              category_id
+            ),
             priority_score = ${priority.score},
             priority_level = ${priority.level},
-            verification = COALESCE(verification, 'unverified'),
+            verification = COALESCE(
+              verification,
+              'unverified'
+            ),
             status = 'ready_for_review'
           WHERE id = ${article.id}
             AND status = 'pending'
+          RETURNING id
         `;
 
-        if (categoryId !== null) {
+        if (!updated.length) continue;
+
+        if (classification.categoryId !== null) {
           categorized++;
         }
 
@@ -280,7 +341,7 @@ async function main() {
             VALUES (
               'warning',
               'deduplication',
-              'احتمال خبر تکراری شناسایی شد؛ نیازمند بررسی مدیر',
+              'احتمال خبر تکراری؛ نیازمند بررسی مدیر',
               ${JSON.stringify({
                 article_id: article.id,
                 candidate_id: duplicate.id,
@@ -296,10 +357,10 @@ async function main() {
         processed++;
 
         console.log(
-          `پردازش خبر ${article.id} | ` +
-          `دسته: ${categoryId ?? 'نامشخص'} | ` +
-          `اولویت: ${priority.level} | ` +
-          `تکراری احتمالی: ${duplicate ? 'بله' : 'خیر'}`
+          `خبر ${article.id}: ` +
+          `دسته=${classification.categoryId ?? 'نامشخص'}، ` +
+          `اولویت=${priority.level}، ` +
+          `تکراری=${duplicate ? 'احتمالی' : 'خیر'}`
         );
       }
 
@@ -307,10 +368,11 @@ async function main() {
         processed,
         duplicates,
         categorized,
+        remaining: Math.max(0, articles.length - processed),
       };
     });
 
-    console.log('\nنتیجه پردازش:');
+    console.log('\nنتیجه نهایی:');
     console.log(JSON.stringify(result, null, 2));
 
   } finally {
@@ -319,6 +381,6 @@ async function main() {
 }
 
 main().catch(error => {
-  console.error('خطای پردازش اخبار:', error.message);
+  console.error('خطای پردازش:', error.message);
   process.exitCode = 1;
 });
