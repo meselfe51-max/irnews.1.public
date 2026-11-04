@@ -1,154 +1,191 @@
 import { readFileSync, appendFileSync } from 'node:fs';
 
-const file = process.env.SOURCES_FILE || new URL('../sources.json', import.meta.url);
-const sources = JSON.parse(readFileSync(file, 'utf8'));
+// تنظیمات
+const SOURCES_FILE =
+  process.env.SOURCES_FILE || new URL('../sources.json', import.meta.url);
 
-const UA = 'Mozilla/5.0 (compatible; LifeNewsBot/1.0)';
+const USER_AGENT = 'Mozilla/5.0 (compatible; LifeNewsBot/1.0)';
 const TIMEOUT_MS = 15000;
-const COMMON_PATHS = ['/rss', '/fa/rss', '/rss.xml', '/feed'];
+const MAX_RSS_CANDIDATES = 10;
 
-const why = (e) => e?.cause?.code || e?.name || e?.message || 'error';
+const COMMON_RSS_PATHS = [
+  '/rss',
+  '/fa/rss',
+  '/rss.xml',
+  '/feed',
+  '/feed/rss',
+];
 
-async function get(url, retries = 1) {
-  let lastErr;
-  for (let i = 0; i <= retries; i++) {
-    const t0 = Date.now();
-    try {
-      const res = await fetch(url, {
-        redirect: 'follow',
-        headers: { 'user-agent': UA, accept: '*/*' },
-        signal: AbortSignal.timeout(TIMEOUT_MS),
-      });
-      return { res, ms: Date.now() - t0 };
-    } catch (err) {
-      lastErr = err;
-    }
+const WHY = (error) =>
+  error?.cause?.code ||
+  error?.name ||
+  error?.message ||
+  'Unknown error';
+
+// خواندن منابع
+let sources;
+
+try {
+  sources = JSON.parse(readFileSync(SOURCES_FILE, 'utf8'));
+
+  if (!Array.isArray(sources)) {
+    throw new Error('sources.json باید شامل یک آرایه باشد.');
   }
-  throw lastErr;
+} catch (error) {
+  console.error('خطا در خواندن sources.json:', error.message);
+  process.exit(1);
 }
 
-function toAbs(href, base) {
-  try { return new URL(href.replace(/&amp;/g, '&'), base).href; } catch { return null; }
+// دریافت اطلاعات از URL
+async function request(url, timeout = TIMEOUT_MS) {
+  const startedAt = Date.now();
+
+  const response = await fetch(url, {
+    method: 'GET',
+    redirect: 'follow',
+    headers: {
+      'user-agent': USER_AGENT,
+      accept: '*/*',
+    },
+    signal: AbortSignal.timeout(timeout),
+  });
+
+  return {
+    response,
+    duration: Date.now() - startedAt,
+  };
 }
 
+// تبدیل لینک نسبی به لینک کامل
+function toAbsoluteUrl(href, base) {
+  try {
+    const clean = href.replace(/&amp;/g, '&');
+    return new URL(clean, base).href;
+  } catch {
+    return null;
+  }
+}
+
+// استخراج RSS از HTML سایت
 function discoverRss(html, base) {
-  const out = [];
-  for (const m of html.matchAll(/<link[^>]+>/gi)) {
-    if (/type=["']application\/(rss|atom)\+xml["']/i.test(m[0])) {
-      const h = /href=["']([^"']+)["']/i.exec(m[0]);
-      const abs = h && toAbs(h[1], base);
-      if (abs) out.push(abs);
+  const found = [];
+
+  // تگ‌های link
+  for (const match of html.matchAll(/<link\b[^>]*>/gi)) {
+    const tag = match[0];
+
+    const isFeed =
+      /application\/(rss|atom)\+xml/i.test(tag) ||
+      /rel=["'][^"']*alternate[^"']*["']/i.test(tag);
+
+    if (!isFeed) continue;
+
+    const href = /href=["']([^"']+)["']/i.exec(tag);
+
+    if (href) {
+      const url = toAbsoluteUrl(href[1], base);
+      if (url) found.push(url);
     }
   }
-  for (const m of html.matchAll(/<a[^>]+href=["']([^"']*rss[^"']*)["']/gi)) {
-    const abs = toAbs(m[1], base);
-    if (abs) out.push(abs);
+
+  // لینک‌هایی که در آدرسشان rss یا feed وجود دارد
+  for (const match of html.matchAll(
+    /<a\b[^>]*href=["']([^"']*(?:rss|feed)[^"']*)["'][^>]*>/gi
+  )) {
+    const url = toAbsoluteUrl(match[1], base);
+    if (url) found.push(url);
   }
-  return out;
+
+  return [...new Set(found)];
 }
 
-function parseXml(xml) {
-  if (!/<(rss|feed|rdf:RDF)[\s>]/i.test(xml)) return null;
-  const blocks = xml.split(/<(?:item|entry)[\s>]/i).slice(1);
-  if (!blocks.length) return null;
-  const first = blocks[0];
+// بررسی اولیه معتبر بودن XML
+function parseFeed(xml) {
+  const isXmlFeed =
+    /<(rss|feed|rdf:RDF)(?:\s|>)/i.test(xml);
+
+  if (!isXmlFeed) return null;
+
+  const blocks = xml.split(
+    /<(?:item|entry)(?:\s|>)/i
+  ).slice(1);
+
+  if (blocks.length === 0) return null;
+
+  const firstItem = blocks[0];
+
+  const titleOk = /<title(?:\s|>)/i.test(firstItem);
+
+  const linkOk =
+    /<link(?:\s|>)/i.test(firstItem) ||
+    /<guid(?:\s|>)/i.test(firstItem);
+
   return {
     items: blocks.length,
-    titleOk: /<title[\s>]/i.test(first),
-    linkOk: /<link[\s>]/i.test(first) || /<guid[\s>]/i.test(first),
+    titleOk,
+    linkOk,
     blocks,
   };
 }
 
-function firstImage(blocks, base) {
-  for (const b of blocks.slice(0, 5)) {
-    const m =
-      /<enclosure[^>]+url=["']([^"']+)["'][^>]*>/i.exec(b) ||
-      /<media:content[^>]+url=["']([^"']+)["']/i.exec(b) ||
-      /<media:thumbnail[^>]+url=["']([^"']+)["']/i.exec(b) ||
-      /(?:<|&lt;)img[^>]+src=(?:["']|&quot;)([^"'&]+)/i.exec(b);
-    if (m) {
-      const abs = toAbs(m[1], base);
-      if (abs && /^https?:/.test(abs)) return abs;
+// استخراج اولین عکس از RSS
+function findFirstImage(blocks, base) {
+  for (const block of blocks.slice(0, 10)) {
+    const patterns = [
+      /<enclosure\b[^>]*url=["']([^"']+)["'][^>]*>/i,
+      /<media:content\b[^>]*url=["']([^"']+)["'][^>]*>/i,
+      /<media:thumbnail\b[^>]*url=["']([^"']+)["'][^>]*>/i,
+      /<(?:img|image)\b[^>]*(?:src|url)=["']([^"']+)["'][^>]*>/i,
+      /<img\b[^>]*src=(?:["']|&quot;)([^"'&]+)/i,
+    ];
+
+    for (const pattern of patterns) {
+      const match = pattern.exec(block);
+
+      if (!match) continue;
+
+      const imageUrl = toAbsoluteUrl(match[1], base);
+
+      if (
+        imageUrl &&
+        /^https?:\/\//i.test(imageUrl)
+      ) {
+        return imageUrl;
+      }
     }
   }
+
   return null;
 }
 
-async function checkSource(s) {
-  const r = { name: s.name, site: '-', rss: '-', image: '-', status: '✅ OK', rssUrl: '' };
+// بررسی یک منبع خبری
+async function checkSource(source) {
+  const result = {
+    name: source.name || 'Unknown',
+    site: '-',
+    rss: '-',
+    rssUrl: '',
+    image: '-',
+    status: '✅ OK',
+  };
 
-  // ۱) صفحه‌ی اصلی
-  let html = '';
+  // منابع غیرفعال بررسی نمی‌شوند
+  if (source.enabled === false) {
+    result.status = '⏭️ SKIPPED';
+    result.site = 'Disabled';
+    result.rss = 'Disabled';
+    result.image = 'Disabled';
+    return result;
+  }
+
+  // اعتبارسنجی آدرس سایت
+  let siteUrl;
+
   try {
-    const { res, ms } = await get(s.site);
-    html = res.ok ? await res.text() : '';
-    r.site = `${res.ok ? 'OK' : 'FAIL'} ${res.status} (${ms}ms)`;
-  } catch (e) {
-    r.site = `FAIL ${why(e)}`;
-  }
+    siteUrl = new URL(source.site);
 
-  // ۲) RSS: اول آدرس دستی، بعد کشف خودکار، بعد مسیرهای رایج
-  const candidates = [];
-  if (s.rss_url) candidates.push(s.rss_url);
-  else {
-    candidates.push(...discoverRss(html, s.site));
-    for (const p of COMMON_PATHS) candidates.push(new URL(p, s.site).href);
-  }
-  let feed = null;
-  for (const url of [...new Set(candidates)].slice(0, 8)) {
-    try {
-      const { res, ms } = await get(url);
-      if (!res.ok) continue;
-      const parsed = parseXml(await res.text());
-      if (parsed) {
-        feed = { url, ms, ...parsed };
-        break;
-      }
-    } catch { /* کاندیدای بعدی */ }
-  }
-  if (feed) {
-    r.rssUrl = feed.url;
-    r.rss = `OK (${feed.ms}ms), items: ${feed.items}, title: ${feed.titleOk}, link: ${feed.linkOk}`;
-  } else {
-    r.rss = s.rss_url ? 'FAIL (آدرس rss_url جواب RSS معتبر نداد)' : 'NOT FOUND (آدرس RSS را در sources.json بگذارید)';
-    r.status = '❌ FAIL';
-    return r;
-  }
-
-  // ۳) عکس: بدون Referer، مثل وقتی که سرور تلگرام لینک را می‌گیرد
-  const img = firstImage(feed.blocks, feed.url);
-  if (!img) {
-    r.image = 'NO IMAGE in feed';
-    r.status = '⚠️ PARTIAL';
-  } else {
-    try {
-      const { res, ms } = await get(img, 2);
-      const type = res.headers.get('content-type') || '';
-      const good = res.ok && type.startsWith('image/');
-      r.image = `${good ? 'OK' : 'PROBLEM'} ${res.status} ${type.split(';')[0]} (${ms}ms)`;
-      if (!good) r.status = '⚠️ PARTIAL';
-    } catch (e) {
-      r.image = `PROBLEM ${why(e)}`;
-      r.status = '⚠️ PARTIAL';
+    if (!['http:', 'https:'].includes(siteUrl.protocol)) {
+      throw new Error('Invalid protocol');
     }
-  }
-  return r;
-}
-
-const rows = [];
-for (const s of sources) {
-  const r = await checkSource(s);
-  rows.push(r);
-  console.log(`${r.status}  ${r.name}\n   site : ${r.site}\n   rss  : ${r.rss}\n   url  : ${r.rssUrl || '-'}\n   image: ${r.image}\n`);
-}
-
-const md = [
-  '| منبع | وضعیت | سایت | RSS | عکس |',
-  '|---|---|---|---|---|',
-  ...rows.map((r) => `| ${r.name} | ${r.status} | ${r.site} | ${r.rss} | ${r.image} |`),
-  '',
-  ...rows.filter((r) => r.rssUrl).map((r) => `- ${r.name}: \`${r.rssUrl}\``),
-].join('\n');
-
-if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, md + '\n');
+  } catch {
+    result.site =
