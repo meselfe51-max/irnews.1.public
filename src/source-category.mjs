@@ -121,7 +121,11 @@ export function getPageCategory(html, articleUrl) {
 export async function fetchPageCategory(url) {
   if (!url || !/^https?:\/\//i.test(url)) return null;
   try {
-    const response = await fetch(url, {
+    const requestUrl = new URL(url);
+    if (requestUrl.hostname.toLowerCase().replace(/^www\./, '') === 'irna.ir') {
+      requestUrl.hostname = 'www2.irna.ir';
+    }
+    const response = await fetch(requestUrl.href, {
       signal: AbortSignal.timeout(12000),
       headers: { 'User-Agent': 'LifeNewsBot/1.0', Accept: 'text/html,application/xhtml+xml' },
     });
