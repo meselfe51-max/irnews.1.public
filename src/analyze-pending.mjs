@@ -53,6 +53,16 @@ async function inspectArticlePage(url) {
     }
 
     const category = cleanCategory(getPageCategory(html, finalUrl));
+    const htmlPreview = html
+      .replace(/<script[\\s\\S]*?<\\/script>/gi, ' ')
+      .replace(/<style[\\s\\S]*?<\\/style>/gi, ' ')
+      .replace(/<[^>]*>/g, ' ')
+      .replace(/&nbsp;|&#160;/gi, ' ')
+      .replace(/&amp;/gi, '&')
+      .replace(/\\s+/g, ' ')
+      .trim()
+      .slice(0, 700);
+
     const pageTitle = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]
       ?.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 180) || null;
 
@@ -64,6 +74,9 @@ async function inspectArticlePage(url) {
       finalUrl,
       htmlLength: html.length,
       pageTitle,
+      htmlPreview,
+      server: response.headers.get('server'),
+      via: response.headers.get('via'),
       hasArticleSectionMeta: /(?:article:section|og:article:section|name=["']section)/i.test(html),
       hasJsonLd: /application\/ld\+json/i.test(html),
       hasBreadcrumb: /BreadcrumbList/i.test(html),
