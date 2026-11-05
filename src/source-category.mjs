@@ -115,6 +115,14 @@ export function getPageCategory(html, articleUrl) {
     if (items.length) return items.join(' > ');
   }
 
+  // IRNA legacy media pages expose their own explicit content-type labels.
+  const articleTag = html.match(/<article\b[^>]*class=["'][^"']*\b(photo-report|video-report)\b[^"']*["'][^>]*>([\s\S]*?)<\/article>/i);
+  if (articleTag) {
+    if (articleTag[1] === 'video-report') return 'فیلم';
+    const photoLabel = articleTag[2].match(/<span\b[^>]*class=["'][^"']*photo-report-tag[^"']*["'][^>]*>([\s\S]*?)<\/span>/i);
+    if (photoLabel) return cleanCategory(photoLabel[1]);
+  }
+
   const itemprop = html.match(/<[^>]*itemprop=["']articleSection["'][^>]*>([\s\S]*?)<\/[^>]+>/i);
   return itemprop && itemprop[1] ? cleanCategory(itemprop[1]) : null;
 }
@@ -124,8 +132,8 @@ export async function fetchPageCategory(url) {
     const requestUrl = new URL(url);
     if (requestUrl.hostname.toLowerCase().replace(/^www\./, '') === 'irna.ir') {
       requestUrl.hostname = 'www2.irna.ir';
-      const articlePath = requestUrl.pathname.match(/^\/(news|photo|video)\/(\d+)/i);
-      if (articlePath) requestUrl.pathname = `/${articlePath[1]}/${articlePath[2]}/`;
+      const articleId = requestUrl.pathname.match(/^\/(?:news|photo|video)\/(\d+)/i)?.[1];
+      if (articleId) requestUrl.pathname = `/news/${articleId}/`;
     }
     const response = await fetch(requestUrl.href, {
       signal: AbortSignal.timeout(12000),
