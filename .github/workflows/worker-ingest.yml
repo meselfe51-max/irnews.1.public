@@ -34,4 +34,5 @@ jobs:
       - name: Run news ingestion
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          FORCE_FETCH: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
         run: node src/ingest.mjs
