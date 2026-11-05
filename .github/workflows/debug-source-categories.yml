@@ -24,6 +24,12 @@ jobs:
       - name: Install dependencies
         run: npm install --no-package-lock
 
+      - name: Run source category unit tests
+        run: |
+          node --check src/source-category.mjs
+          node --check src/ingest.mjs
+          node scripts/test-source-categories.mjs
+
       - name: Validate ingestion syntax
         run: node --check src/ingest.mjs
 
