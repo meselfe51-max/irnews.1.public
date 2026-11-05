@@ -1,8 +1,18 @@
-
 name: News Ingestion Worker
 
 on:
   workflow_dispatch:
+
+  push:
+    branches:
+      - main
+    paths:
+      - 'sources.json'
+      - 'src/ingest.mjs'
+      - 'src/source-category.mjs'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/worker-ingest.yml'
 
   schedule:
     - cron: '*/15 * * * *'
