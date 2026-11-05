@@ -111,7 +111,7 @@ function getMetaContent(html, attribute, value) {
   return null;
 }
 
-function getBreadcrumbCategory(breadcrumb) {
+function getBreadcrumbCategory(breadcrumb, articleUrl) {
   if (typeof breadcrumb === 'string') {
     return cleanCategory(breadcrumb);
   }
@@ -124,27 +124,60 @@ function getBreadcrumbCategory(breadcrumb) {
     ? breadcrumb.itemListElement
     : [];
 
-  const names = items
-    .map(entry => {
-      const item = entry?.item;
+  const crumbs = items.map(entry => {
+    const item = entry?.item;
+    const url = typeof item === 'string'
+      ? item
+      : item?.['@id'] || item?.url || '';
 
-      if (typeof item === 'string') return item;
+    const name = typeof item === 'object'
+      ? item?.name || entry?.name || ''
+      : entry?.name || '';
 
-      return item?.name || entry?.name || '';
-    })
-    .map(value => cleanCategory(value))
-    .filter(Boolean)
-    .filter(value => !/^(خانه|صفحه اصلی|home)$/i.test(value));
+    return {
+      name: cleanCategory(name),
+      url: String(url),
+    };
+  }).filter(crumb =>
+    crumb.name && !/^(خانه|صفحه اصلی|home)$/i.test(crumb.name)
+  );
 
-  return names.length ? names[names.length - 1] : null;
+  if (!crumbs.length) return null;
+
+  let articleIndex = -1;
+
+  if (articleUrl) {
+    try {
+      const articlePath = new URL(articleUrl).pathname;
+      articleIndex = crumbs.findIndex(crumb => {
+        if (!crumb.url) return false;
+
+        try {
+          const crumbUrl = new URL(crumb.url, articleUrl);
+          return crumbUrl.href === new URL(articleUrl).href ||
+            crumbUrl.pathname === articlePath;
+        } catch {
+          return crumb.url === articleUrl;
+        }
+      });
+    } catch {
+      articleIndex = -1;
+    }
+  }
+
+  if (articleIndex > 0) return crumbs[articleIndex - 1].name;
+  if (articleIndex === 0) return null;
+  if (crumbs.length > 1) return crumbs[crumbs.length - 2].name;
+
+  return crumbs[0].name;
 }
 
-function findJsonLdCategory(value) {
+function findJsonLdCategory(value, articleUrl) {
   if (!value || typeof value !== 'object') return null;
 
   if (Array.isArray(value)) {
     for (const item of value) {
-      const found = findJsonLdCategory(item);
+      const found = findJsonLdCategory(item, articleUrl);
       if (found) return found;
     }
 
@@ -154,19 +187,19 @@ function findJsonLdCategory(value) {
   const section = cleanCategory(value.articleSection);
   if (section) return section;
 
-  const mainEntity = value.mainEntityOfPage;
+  const types = Array.isArray(value['@type'])
+    ? value['@type']
+    : [value['@type']];
 
-  if (mainEntity && typeof mainEntity === 'object') {
-    const breadcrumbCategory = getBreadcrumbCategory(
-      mainEntity.breadcrumb
-    );
+  const breadcrumb = value.mainEntityOfPage?.breadcrumb ||
+    (types.includes('BreadcrumbList') ? value : null);
 
-    if (breadcrumbCategory) return breadcrumbCategory;
-  }
+  const breadcrumbCategory = getBreadcrumbCategory(breadcrumb, articleUrl);
+  if (breadcrumbCategory) return breadcrumbCategory;
 
   for (const child of Object.values(value)) {
     if (child && typeof child === 'object') {
-      const found = findJsonLdCategory(child);
+      const found = findJsonLdCategory(child, articleUrl);
       if (found) return found;
     }
   }
@@ -174,7 +207,7 @@ function findJsonLdCategory(value) {
   return null;
 }
 
-function getPageCategory(html) {
+function getPageCategory(html, articleUrl) {
   const metaCandidates = [
     ['property', 'article:section'],
     ['name', 'article:section'],
@@ -198,7 +231,7 @@ function getPageCategory(html) {
       .trim();
 
     try {
-      const category = findJsonLdCategory(JSON.parse(json));
+      const category = findJsonLdCategory(JSON.parse(json), articleUrl);
       if (category) return category;
     } catch {
       // JSON-LD نامعتبر نادیده گرفته می‌شود.
@@ -244,7 +277,7 @@ async function fetchPageCategory(url) {
       return null;
     }
 
-    return getPageCategory(html);
+    return getPageCategory(html, url);
   } catch (error) {
     console.warn(`دریافت دسته صفحه ناموفق بود: ${url} | ${error.message}`);
     return null;
