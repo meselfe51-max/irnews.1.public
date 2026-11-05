@@ -150,21 +150,46 @@ async function saveArticle(source, item) {
   };
 }
 
+async function fetchRssWithRetry(url, attempts = 3) {
+  let lastError;
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const response = await fetch(url, {
+        signal: AbortSignal.timeout(30000),
+        redirect: 'follow',
+        headers: {
+          'User-Agent': 'LifeNewsBot/1.0',
+          Accept: 'application/rss+xml, application/xml, text/xml',
+        },
+      });
+
+      if (response.ok) return response;
+
+      const retryable = [408, 425, 429, 500, 502, 503, 504].includes(response.status);
+      const error = new Error(`HTTP ${response.status}`);
+      if (!retryable || attempt === attempts) throw error;
+      lastError = error;
+    } catch (error) {
+      lastError = error;
+      if (attempt === attempts || /^HTTP 4(?!08|25|29)\\d$/.test(error.message)) {
+        throw error;
+      }
+    }
+
+    const delayMs = 1500 * attempt;
+    console.warn(`تلاش RSS شماره ${attempt} ناموفق بود؛ ${delayMs}ms دیگر تلاش می‌شود: ${lastError.message}`);
+    await new Promise(resolve => setTimeout(resolve, delayMs));
+  }
+
+  throw lastError || new Error('دریافت RSS ناموفق بود.');
+}
+
 async function fetchSource(source) {
   console.log(`\nدر حال دریافت: ${source.name}`);
 
   try {
-    const response = await fetch(source.rss_url, {
-      signal: AbortSignal.timeout(20000),
-      headers: {
-        'User-Agent': 'LifeNewsBot/1.0',
-        Accept: 'application/rss+xml, application/xml, text/xml',
-      },
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
+    const response = await fetchRssWithRetry(source.rss_url);
 
     const xml = await response.text();
     const data = parser.parse(xml);
