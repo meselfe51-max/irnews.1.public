@@ -69,12 +69,18 @@ async function inspect(source) {
       const link = getLink(item);
 
       let category = getRssCategory(item);
+      let pageCategory = null;
       let method = 'RSS';
+
+      // Independently probe one live article page per source to verify fallback parsing.
+      if (index === 0 && link) {
+        pageCategory = await fetchPageCategory(link);
+      }
 
       if (category) {
         rssCount++;
       } else if (link) {
-        category = await fetchPageCategory(link);
+        category = pageCategory || await fetchPageCategory(link);
         method = category ? 'ARTICLE_PAGE' : 'NOT_FOUND';
         if (category) pageCount++;
         else missingCount++;
@@ -87,6 +93,7 @@ async function inspect(source) {
         sample: index + 1,
         title,
         category,
+        pageCategory: index === 0 ? pageCategory : undefined,
         method,
       }));
     }
