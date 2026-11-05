@@ -1,4 +1,4 @@
-
+import { readFileSync } from 'node:fs';
 import postgres from 'postgres';
 import { XMLParser } from 'fast-xml-parser';
 import { createHash } from 'node:crypto';
@@ -24,16 +24,19 @@ const parser = new XMLParser({
   trimValues: true,
 });
 
-const SOURCES = [
-  { name: 'ایرنا', rss_url: 'https://www.irna.ir/rss' },
-  { name: 'ایسنا', rss_url: 'https://www.isna.ir/rss' },
-  { name: 'مهر', rss_url: 'https://www.mehrnews.com/rss' },
-  {
-    name: 'تسنیم',
-    rss_url: 'https://www.tasnimnews.ir/fa/rss/feed/0/0/8/0/AllStories',
-  },
-  { name: 'خبرآنلاین', rss_url: 'https://www.khabaronline.ir/rss' },
-];
+const SOURCES = JSON.parse(
+  readFileSync(new URL('../sources.json', import.meta.url), 'utf8')
+);
+
+if (!Array.isArray(SOURCES)) {
+  throw new Error('ساختار sources.json باید آرایه باشد.');
+}
+
+for (const source of SOURCES) {
+  if (!source.name || !source.rss_url || !/^https?:\/\//i.test(source.rss_url)) {
+    throw new Error(`تنظیم منبع نامعتبر است: ${source.name || 'بدون نام'}`);
+  }
+}
 
 function getImage(item) {
   const candidates = [
@@ -77,11 +80,17 @@ async function ensureSources() {
   for (const source of SOURCES) {
     await sql`
       INSERT INTO sources (name, rss_url, enabled, interval_minutes)
-      VALUES (${source.name}, ${source.rss_url}, true, 15)
+      VALUES (
+        ${source.name},
+        ${source.rss_url},
+        ${source.enabled !== false},
+        ${source.interval_minutes || 15}
+      )
       ON CONFLICT (rss_url)
       DO UPDATE SET
         name = EXCLUDED.name,
-        enabled = true
+        enabled = EXCLUDED.enabled,
+        interval_minutes = EXCLUDED.interval_minutes
     `;
   }
 }
@@ -106,8 +115,6 @@ async function saveArticle(source, item) {
     item.pubDate || item.published || item.updated
   );
 
-  // خبر را ابتدا با اطلاعات خام RSS ذخیره می‌کنیم تا خطای دریافت صفحه
-  // خبر یا استخراج دسته‌بندی مانع از ثبت خود خبر نشود.
   const rssCategory = getRssCategory(item);
 
   const contentHash = createHash('sha256')
@@ -198,7 +205,7 @@ async function fetchRssWithRetry(url, attempts = 3) {
       lastError = error;
     } catch (error) {
       lastError = error;
-      if (attempt === attempts || /^HTTP 4(?!08|25|29)\\d$/.test(error.message)) {
+      if (attempt === attempts || /^HTTP 4(?!08|25|29)\d$/.test(error.message)) {
         throw error;
       }
     }
