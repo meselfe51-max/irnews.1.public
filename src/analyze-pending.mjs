@@ -16,10 +16,10 @@ function normalizeUrl(value) {
     const url = new URL(value);
     url.hash = '';
     url.search = '';
-    url.pathname = url.pathname.replace(/\\/$/, '');
+    url.pathname = url.pathname.replace(/\/$/, '');
     return url.href.toLowerCase();
   } catch {
-    return String(value || '').trim().replace(/\\/$/, '').toLowerCase();
+    return String(value || '').trim().replace(/\/$/, '').toLowerCase();
   }
 }
 
@@ -175,7 +175,7 @@ async function main() {
     const report = {
       checked: 0,
       already_had_category: 0,
-      found_from_page: 0,
+      found_from_rss_or_page: 0,
       not_found: 0,
       saved: 0,
       reasons: {},
@@ -200,7 +200,7 @@ async function main() {
           diagnostic = await inspectArticlePage(article.source_url);
           category = diagnostic.category;
         }
-        if (category) report.found_from_page++;
+        if (category) report.found_from_rss_or_page++;
         else report.not_found++;
 
         const reason = diagnostic.reason;
@@ -212,7 +212,7 @@ async function main() {
           UPDATE articles
           SET source_category = ${category}
           WHERE id = ${article.id}
-            AND source_category IS NULL
+            AND (source_category IS NULL OR source_category = '')
           RETURNING id
         `;
         if (updated.length) report.saved++;
