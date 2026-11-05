@@ -84,6 +84,41 @@ try {
 
     console.log('\nتعداد رکوردها:');
     console.log(JSON.stringify(counts, null, 2));
+
+    // Read-only audit: verify actual source-category coverage and distribution.
+    const [categoryCoverage] = await sql`
+      SELECT
+        COUNT(*)::int AS total_articles,
+        COUNT(*) FILTER (
+          WHERE source_category IS NOT NULL AND BTRIM(source_category) <> ''
+        )::int AS with_source_category,
+        COUNT(*) FILTER (
+          WHERE source_category IS NULL OR BTRIM(source_category) = ''
+        )::int AS without_source_category,
+        COUNT(DISTINCT BTRIM(source_category)) FILTER (
+          WHERE source_category IS NOT NULL AND BTRIM(source_category) <> ''
+        )::int AS distinct_source_categories,
+        COUNT(*) FILTER (WHERE status = 'pending')::int AS pending_articles
+      FROM articles
+    `;
+
+    console.log('\nگزارش پوشش دسته‌بندی منبع (فقط خواندنی):');
+    console.log(JSON.stringify(categoryCoverage, null, 2));
+
+    const categoryDistribution = await sql`
+      SELECT
+        BTRIM(source_category) AS source_category,
+        COUNT(*)::int AS article_count
+      FROM articles
+      WHERE source_category IS NOT NULL
+        AND BTRIM(source_category) <> ''
+      GROUP BY BTRIM(source_category)
+      ORDER BY article_count DESC, source_category
+      LIMIT 30
+    `;
+
+    console.log('\n۳۰ دسته پرتکرار منبع:');
+    console.log(JSON.stringify(categoryDistribution, null, 2));
   }
 } catch (error) {
   const message = String(error.message || '')
