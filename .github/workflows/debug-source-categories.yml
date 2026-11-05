@@ -6,6 +6,7 @@ on:
     paths:
       - 'scripts/debug-source-categories.mjs'
       - 'src/source-category.mjs'
+      - 'src/ingest.mjs'
       - 'scripts/test-source-categories.mjs'
       - '.github/workflows/debug-source-categories.yml'
 
