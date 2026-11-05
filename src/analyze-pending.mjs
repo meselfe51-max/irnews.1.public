@@ -160,6 +160,7 @@ async function inspectArticlePage(url) {
       htmlLength: html.length,
       pageTitle,
       htmlPreview,
+      htmlRawPreview: /86312839|1405081309147/.test(url) ? html.slice(0, 2200) : undefined,
       server: response.headers.get('server'),
       via: response.headers.get('via'),
       hasArticleSectionMeta: /(?:article:section|og:article:section|name=["']section)/i.test(html),
