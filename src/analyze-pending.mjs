@@ -5,7 +5,7 @@ import { ISNA_RSS_FEEDS } from './isna-rss-feeds.mjs';
 
 const DATABASE_URL = process.env.DATABASE_URL;
 const DRY_RUN = process.env.DRY_RUN !== 'false';
-const BATCH_SIZE = 100;
+const BATCH_SIZE = 200;
 const blockedSourceHosts = new Set();
 const rssParser = new XMLParser({
   ignoreAttributes: false,
