@@ -124,8 +124,8 @@ export async function fetchPageCategory(url) {
     const requestUrl = new URL(url);
     if (requestUrl.hostname.toLowerCase().replace(/^www\./, '') === 'irna.ir') {
       requestUrl.hostname = 'www2.irna.ir';
-      const articleId = requestUrl.pathname.match(/^\/news\/(\d+)/i)?.[1];
-      if (articleId) requestUrl.pathname = `/news/${articleId}/`;
+      const articlePath = requestUrl.pathname.match(/^\/(news|photo|video)\/(\d+)/i);
+      if (articlePath) requestUrl.pathname = `/${articlePath[1]}/${articlePath[2]}/`;
     }
     const response = await fetch(requestUrl.href, {
       signal: AbortSignal.timeout(12000),
