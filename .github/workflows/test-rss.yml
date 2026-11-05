@@ -46,7 +46,7 @@ jobs:
                   "home": "https://www.mehrnews.com/",
               },
               "Tasnim": {
-                  "main": "https://www.tasnimnews.ir/fa/rss",
+                  "main": "https://www.tasnimnews.ir/fa/rss/feed/0/0/8/0/AllStories",
                   "home": "https://www.tasnimnews.ir/fa",
               },
               "Khabaronline": {
@@ -54,8 +54,8 @@ jobs:
                   "home": "https://www.khabaronline.ir/",
               },
               "Fars": {
-                  "main": "https://www.farsnews.ir/rss",
-                  "home": "https://www.farsnews.ir/",
+                  "main": "https://farsnews.ir/rss",
+                  "home": "https://farsnews.ir/",
               },
           }
 
