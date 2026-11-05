@@ -1,56 +1,72 @@
 import { XMLParser } from 'fast-xml-parser';
+import { getRssCategory, getText } from '../src/source-category.mjs';
 
 const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_', trimValues: true });
 const targetIds = new Set(Array.from({ length: 30 }, (_, index) => String(1405081309163 - index)));
 const feeds = [
-  { id: 5, label: 'علمی و دانشگاهی' },
-  { id: 14, label: 'سیاسی' },
-  { id: 20, label: 'فرهنگی و هنری' },
-  { id: 34, label: 'اقتصادی' },
-  { id: 9, label: 'اجتماعی' },
-  { id: 17, label: 'جهان' },
-  { id: 24, label: 'ورزشی' },
-  { id: 30, label: 'استان‌ها' },
-  { id: 28, label: 'عکس' },
-  { id: 401, label: 'چندرسانه‌ای' },
-  { id: 353, label: 'بازار' },
-  { id: 363, label: 'ایسنا+' },
-];
+  [5,'علمی و دانشگاهی'],[44,'علمی و دانشگاهی > علم'],[38,'علمی و دانشگاهی > پژوهش'],[41,'علمی و دانشگاهی > فناوری'],[303,'علمی و دانشگاهی > جهاد دانشگاهی'],[535,'علمی و دانشگاهی > هوش مصنوعی'],[390,'علمی و دانشگاهی > آموزش'],[392,'علمی و دانشگاهی > صنفی،فرهنگی‌ودانشجویی'],[536,'علمی و دانشگاهی > دانش‌بنیان‌ها'],
+  [14,'سیاسی'],[240,'سیاسی > اندیشه امام و رهبری'],[152,'سیاسی > سیاست داخلی'],[155,'سیاسی > دولت'],[158,'سیاسی > مجلس'],[407,'سیاسی > دفاعی - امنیتی'],[164,'سیاسی > حقوقی و قضایی'],
+  [20,'فرهنگی و هنری'],[167,'فرهنگی و هنری > دین و اندیشه'],[113,'فرهنگی و هنری > فرهنگ عمومی'],[95,'فرهنگی و هنری > ادبیات و کتاب'],[98,'فرهنگی و هنری > سینما و تئاتر'],[101,'فرهنگی و هنری > تجسمی و موسیقی'],[110,'فرهنگی و هنری > گردشگری و میراث'],[298,'فرهنگی و هنری > رسانه'],[31,'فرهنگی و هنری > فرهنگ حماسه'],
+  [34,'اقتصادی'],[68,'اقتصادی > اقتصاد کلان'],[74,'اقتصادی > تولید و تجارت'],[77,'اقتصادی > انرژی'],[80,'اقتصادی > عمران و اشتغال'],[92,'اقتصادی > ارتباطات و فناوری اطلاعات'],
+  [9,'اجتماعی'],[47,'اجتماعی > جامعه، شهری'],[50,'اجتماعی > سلامت'],[53,'اجتماعی > خانواده'],[59,'اجتماعی > آموزش و پرورش'],[62,'اجتماعی > محیط زیست'],[65,'اجتماعی > حوادث، انتظامی'],[550,'اجتماعی > سبک زندگی'],
+  [17,'جهان'],[521,'جهان > ایران در جهان'],[161,'جهان > سیاست خارجی'],[143,'جهان > آمریکا و اروپا'],[140,'جهان > غرب آسیا و آفریقا'],[522,'جهان > آسیا و اقیانوسیه'],[146,'جهان > محور مقاومت'],[149,'جهان > گزارش و تحلیل'],[170,'جهان > انرژی هسته‌ای'],
+  [24,'ورزشی'],[119,'ورزشی > فوتبال، فوتسال'],[122,'ورزشی > کشتی، رزمی'],[125,'ورزشی > جهان ورزش'],[137,'ورزشی > توپ و تور'],[128,'ورزشی > ورزش بانوان'],[131,'ورزشی > علم ورزش'],[134,'ورزشی > سایر ورزش‌ها'],[512,'ورزشی > ویدیوی ورزشی'],[411,'ورزشی > نتایج زنده'],
+  [30,'استان‌ها'],[260,'استان‌ها > آذربایجان شرقی'],[219,'استان‌ها > آذربایجان غربی'],[212,'استان‌ها > اردبیل'],[221,'استان‌ها > البرز'],[258,'استان‌ها > اصفهان'],[223,'استان‌ها > ایلام'],[225,'استان‌ها > بوشهر'],[262,'استان‌ها > تهران'],[264,'استان‌ها > چهارمحال و بختیاری'],[227,'استان‌ها > خراسان شمالی'],[296,'استان‌ها > خراسان جنوبی'],[266,'استان‌ها > خراسان رضوی'],[307,'استان‌ها > خوزستان'],[268,'استان‌ها > زنجان'],[274,'استان‌ها > فارس'],[276,'استان‌ها > قم'],[231,'استان‌ها > قزوین'],[270,'استان‌ها > سمنان'],[272,'استان‌ها > سیستان و بلوچستان'],[229,'استان‌ها > کردستان'],[278,'استان‌ها > کرمان'],[305,'استان‌ها > کرمانشاه'],[280,'استان‌ها > کهگیلویه و بویراحمد'],[233,'استان‌ها > گلستان'],[282,'استان‌ها > گیلان'],[284,'استان‌ها > لرستان'],[288,'استان‌ها > مرکزی'],[286,'استان‌ها > مازندران'],[290,'استان‌ها > هرمزگان'],[292,'استان‌ها > همدان'],[294,'استان‌ها > یزد'],
+  [28,'عکس'],[201,'عکس > مستند'],[204,'عکس > خبری'],[417,'عکس > ایران'],[429,'عکس > فتوبلاگ'],[532,'عکس > استان‌ها'],[581,'عکس > آرشیو'],
+  [401,'چندرسانه‌ای'],[414,'چندرسانه‌ای > ویدیو'],[439,'چندرسانه‌ای > اینفوگرافیک'],[440,'چندرسانه‌ای > موشن‌گرافیک'],[415,'چندرسانه‌ای > استودیو'],[441,'چندرسانه‌ای > پادکست'],[416,'چندرسانه‌ای > دیدنی‌ها'],[576,'چندرسانه‌ای > ویدیوی کوتاه'],[575,'چندرسانه‌ای > استان‌ها'],[501,'چندرسانه‌ای > ایسنا ۲۴'],
+  [353,'بازار'],[356,'بازار > خبر بازار'],[340,'بازار > استخدام'],[544,'بازار > آگهی عمومی'],
+  [363,'ایسنا+'],[253,'ایسنا+ > رسانه دیگر'],[367,'ایسنا+ > ایسنا+'],[506,'ایسنا+ > دیدگاه'],
+].map(([id,label])=>({id,label}));
 
-for (const feed of feeds) {
-  try {
-    const response = await fetch(`https://www.isna.ir/rss/tp/${feed.id}`, {
-      signal: AbortSignal.timeout(15000),
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; LifeNewsBot/1.0)', Accept: 'application/rss+xml, application/xml, text/xml' },
-    });
-    const xml = await response.text();
-    if (!response.ok || !xml.includes('<rss')) {
-      console.log(JSON.stringify({ feed: feed.label, id: feed.id, status: response.status, contentType: response.headers.get('content-type'), length: xml.length, preview: xml.slice(0, 100) }));
+const matches = new Map();
+let okFeeds = 0;
+let failedFeeds = [];
+for (let offset = 0; offset < feeds.length; offset += 6) {
+  const batch = feeds.slice(offset, offset + 6);
+  const results = await Promise.all(batch.map(async feed => {
+    try {
+      const response = await fetch(`https://www.isna.ir/rss/tp/${feed.id}`, {
+        signal: AbortSignal.timeout(15000),
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; LifeNewsBot/1.0)', Accept: 'application/rss+xml, application/xml, text/xml' },
+      });
+      if (!response.ok) return { feed, error: `HTTP ${response.status}` };
+      const xml = await response.text();
+      if (!xml.includes('<rss')) return { feed, error: 'NON_RSS' };
+      const parsed = parser.parse(xml);
+      const raw = parsed?.rss?.channel?.item;
+      const items = Array.isArray(raw) ? raw : raw ? [raw] : [];
+      const found = [];
+      for (const item of items) {
+        const link = getText(item.link).trim();
+        const id = link.match(/\\/news\\/(\\d+)/)?.[1];
+        if (!targetIds.has(id)) continue;
+        const category = getRssCategory(item) || feed.label;
+        found.push({ id, title: getText(item.title), category, feed: feed.label });
+      }
+      return { feed, items: items.length, found };
+    } catch (error) {
+      return { feed, error: error.message };
+    }
+  }));
+  for (const result of results) {
+    if (result.error) {
+      failedFeeds.push({ id: result.feed.id, error: result.error });
       continue;
     }
-    const parsed = parser.parse(xml);
-    const raw = parsed?.rss?.channel?.item;
-    const items = Array.isArray(raw) ? raw : raw ? [raw] : [];
-    const matches = [];
-    for (const item of items) {
-      const link = typeof item.link === 'string' ? item.link : item.link?.['#text'] || '';
-      const id = link.match(/\/news\/(\d+)/)?.[1];
-      if (targetIds.has(id)) matches.push({
-        id,
-        title: item.title,
-        category: item.category,
-        feed: feed.label,
-      });
+    okFeeds++;
+    for (const item of result.found) {
+      if (!matches.has(item.id) || item.category.length > matches.get(item.id).category.length) {
+        matches.set(item.id, item);
+      }
     }
-    console.log(JSON.stringify({
-      feed: feed.label,
-      id: feed.id,
-      status: response.status,
-      items: items.length,
-      matches,
-      sampleCategory: items.slice(0, 2).map(item => item.category ?? null),
-    }));
-  } catch (error) {
-    console.log(JSON.stringify({ feed: feed.label, id: feed.id, error: error.message }));
   }
 }
+console.log(JSON.stringify({
+  feedCount: feeds.length,
+  okFeeds,
+  failedFeeds,
+  targetCount: targetIds.size,
+  matchedCount: matches.size,
+  matches: [...matches.values()].sort((a,b)=>Number(b.id)-Number(a.id)),
+  unmatched: [...targetIds].filter(id=>!matches.has(id)),
+}, null, 2));
