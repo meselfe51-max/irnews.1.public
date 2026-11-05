@@ -32,7 +32,7 @@ function getMetaContent(html, attribute, value) {
   const escaped = value.replace(/[.*+?^{}()|[\]\\]/g, '\\$&');
   const tags = html.match(/<meta\b[^>]*>/gi) || [];
   for (const tag of tags) {
-    const pattern = new RegExp('\\b' + attribute + '\\s*=\\s*["\\']' + escaped + '["\\']', 'i');
+    const pattern = new RegExp("\\b" + attribute + "\\s*=\\s*[\"']" + escaped + "[\"']", "i");
     if (!pattern.test(tag)) continue;
     const content = tag.match(/\bcontent\s*=\s*["']([^"']+)["']/i);
     if (content && content[1]) return cleanCategory(content[1]);
