@@ -38,7 +38,7 @@ for (let offset = 0; offset < feeds.length; offset += 6) {
       const found = [];
       for (const item of items) {
         const link = getText(item.link).trim();
-        const id = link.match(/\\/news\\/(\\d+)/)?.[1];
+        const id = new URL(link).pathname.split('/')[2];
         if (!targetIds.has(id)) continue;
         const category = getRssCategory(item) || feed.label;
         found.push({ id, title: getText(item.title), category, feed: feed.label });
