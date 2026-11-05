@@ -192,7 +192,7 @@ async function fetchRssWithRetry(url, attempts = 3) {
         signal: AbortSignal.timeout(30000),
         redirect: 'follow',
         headers: {
-          'User-Agent': 'LifeNewsBot/1.0',
+          'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
           Accept: 'application/rss+xml, application/xml, text/xml',
         },
       });
