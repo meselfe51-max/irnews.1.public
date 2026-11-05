@@ -15,7 +15,7 @@ const sql = postgres(DATABASE_URL, {
 });
 
 async function inspectArticlePage(url) {
-  if (!url || !/^https?:\\/\\//i.test(url)) {
+  if (!url || !/^https?:\/\//i.test(url)) {
     return { category: null, reason: 'INVALID_URL', url: url || null };
   }
 
@@ -39,7 +39,7 @@ async function inspectArticlePage(url) {
       return { category: null, reason: 'HTTP_ERROR', status, contentType, finalUrl };
     }
 
-    if (!/text\\/html|application\\/xhtml\\+xml/i.test(contentType)) {
+    if (!/text\/html|application\/xhtml\+xml/i.test(contentType)) {
       await response.body?.cancel();
       return { category: null, reason: 'NON_HTML', status, contentType, finalUrl };
     }
@@ -53,8 +53,8 @@ async function inspectArticlePage(url) {
     }
 
     const category = cleanCategory(getPageCategory(html, finalUrl));
-    const pageTitle = html.match(/<title[^>]*>([\\s\\S]*?)<\\/title>/i)?.[1]
-      ?.replace(/<[^>]*>/g, ' ').replace(/\\s+/g, ' ').trim().slice(0, 180) || null;
+    const pageTitle = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]
+      ?.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 180) || null;
 
     return {
       category,
@@ -65,7 +65,7 @@ async function inspectArticlePage(url) {
       htmlLength: html.length,
       pageTitle,
       hasArticleSectionMeta: /(?:article:section|og:article:section|name=["']section)/i.test(html),
-      hasJsonLd: /application\\/ld\\+json/i.test(html),
+      hasJsonLd: /application\/ld\+json/i.test(html),
       hasBreadcrumb: /BreadcrumbList/i.test(html),
     };
   } catch (error) {
@@ -144,7 +144,7 @@ async function main() {
       }));
     }
 
-    console.log('\\n========== گزارش تشخیصی ==========');
+    console.log('\n========== گزارش تشخیصی ==========');
     console.log(JSON.stringify(report, null, 2));
     console.log(DRY_RUN
       ? 'DRY_RUN: هیچ داده‌ای در دیتابیس تغییر نکرد.'
