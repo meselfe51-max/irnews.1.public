@@ -19,8 +19,11 @@ for (const probe of probes) {
       },
     });
     const html = await response.text();
-    const title = html.match(/<title[^>]*>([\\s\\S]*?)<\\/title>/i)?.[1]?.replace(/<[^>]+>/g, ' ').trim();
-    const meta = html.match(/<meta[^>]+(?:article:section|og:article:section|name=[\\\"']section)[^>]+>/i)?.[0];
+    const titleStart = html.toLowerCase().indexOf('<title');
+    const titleEnd = titleStart >= 0 ? html.toLowerCase().indexOf('</title>', titleStart) : -1;
+    const title = titleEnd > titleStart
+      ? html.slice(html.indexOf('>', titleStart) + 1, titleEnd).replace(/<[^>]+>/g, ' ').trim()
+      : null;
     console.log(JSON.stringify({
       source: probe.source,
       status: response.status,
@@ -28,11 +31,11 @@ for (const probe of probes) {
       contentType: response.headers.get('content-type'),
       server: response.headers.get('server'),
       length: html.length,
-      title: title || null,
-      hasJsonLd: /application\\/ld\\+json/i.test(html),
-      hasBreadcrumb: /BreadcrumbList/i.test(html),
-      hasTransferPage: /Transferring to the website|در حال انتقال|static-pages-/i.test(html),
-      meta: meta || null,
+      title,
+      hasJsonLd: html.includes('application/ld+json'),
+      hasBreadcrumb: html.includes('BreadcrumbList'),
+      hasTransferPage: html.includes('Transferring to the website') || html.includes('در حال انتقال') || html.includes('static-pages-'),
+      hasArticleSection: html.includes('article:section') || html.includes('og:article:section'),
       preview: html.slice(0, 180).replace(/\\s+/g, ' '),
     }));
   } catch (error) {
