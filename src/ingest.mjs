@@ -144,7 +144,10 @@ async function saveArticle(source, item) {
     RETURNING id
   `;
 
-  return result.length > 0;
+  return {
+    inserted: result.length > 0,
+    hasSourceCategory: Boolean(sourceCategory),
+  };
 }
 
 async function fetchSource(source) {
@@ -175,12 +178,12 @@ async function fetchSource(source) {
     let withSourceCategory = 0;
 
     for (const item of items) {
-      const hasRssCategory = Boolean(getRssCategory(item));
+      const saved = await saveArticle(source, item);
 
-      if (await saveArticle(source, item)) {
+      if (saved?.inserted) {
         inserted++;
 
-        if (hasRssCategory) {
+        if (saved.hasSourceCategory) {
           withSourceCategory++;
         }
       }
@@ -199,7 +202,7 @@ async function fetchSource(source) {
       `موفق: ${source.name} | ` +
       `خبرهای فید: ${items.length} | ` +
       `خبرهای جدید: ${inserted} | ` +
-      `دارای دسته در RSS: ${withSourceCategory}`
+      `دارای دسته منبع (RSS یا صفحه خبر): ${withSourceCategory}`
     );
   } catch (error) {
     await sql`
