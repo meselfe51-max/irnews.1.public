@@ -105,6 +105,16 @@ export function getPageCategory(html, articleUrl) {
       if (category) return category;
     } catch {}
   }
+
+  // IRNA's legacy www2 host exposes the full section path in its breadcrumb.
+  const breadcrumb = html.match(/<(?:ol|ul)\b[^>]*class=["'][^"']*breadcrumb[^"']*["'][^>]*>([\s\S]*?)<\/(?:ol|ul)>/i);
+  if (breadcrumb) {
+    const items = [...breadcrumb[1].matchAll(/<li\b[^>]*>([\s\S]*?)<\/li>/gi)]
+      .map(match => cleanCategory(match[1]))
+      .filter(value => value && !/^(خانه|صفحه اصلی|home)$/i.test(value));
+    if (items.length) return items.join(' > ');
+  }
+
   const itemprop = html.match(/<[^>]*itemprop=["']articleSection["'][^>]*>([\s\S]*?)<\/[^>]+>/i);
   return itemprop && itemprop[1] ? cleanCategory(itemprop[1]) : null;
 }
