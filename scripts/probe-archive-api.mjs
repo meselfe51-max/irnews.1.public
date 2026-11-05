@@ -11,21 +11,5 @@ const response = await fetch(url, {
   },
 });
 const html = await response.text();
-const anchors = [...html.matchAll(/<a\\b[^>]*href=[\"']([^\"']+)[\"'][^>]*>([\\s\\S]*?)<\\/a>/gi)]
-  .map(match => ({
-    href: match[1],
-    text: match[2].replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').trim(),
-  }))
-  .filter(item => item.text || /service|category|section/i.test(item.href))
-  .slice(0, 80);
-const hints = [...html.matchAll(/.{0,120}(?:breadcrumb|category|section|service|موضوع|گروه خبری|دسته).{0,180}/gi)]
-  .slice(0, 40)
-  .map(match => match[0].replace(/\\s+/g, ' '));
-console.log(JSON.stringify({
-  status: response.status,
-  finalUrl: response.url,
-  length: html.length,
-  parsedCategory: getPageCategory(html, url),
-  anchors,
-  hints,
-}, null, 2));
+console.log('STATUS', response.status, 'LENGTH', html.length, 'CATEGORY', getPageCategory(html, url));
+console.log('HTML_START', html.slice(0, 14000));
