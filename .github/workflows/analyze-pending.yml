@@ -2,6 +2,12 @@
 name: Analyze Pending News
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'src/analyze-pending.mjs'
+      - '.github/workflows/analyze-pending.yml'
   workflow_dispatch:
     inputs:
       dry_run:
