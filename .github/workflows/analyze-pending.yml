@@ -7,6 +7,7 @@ on:
       - main
     paths:
       - 'src/analyze-pending.mjs'
+      - 'src/source-category.mjs'
       - '.github/workflows/analyze-pending.yml'
   workflow_dispatch:
     inputs:
