@@ -101,8 +101,11 @@ async function inspectArticlePage(url) {
   }
 
   let sourceHost;
+  let requestUrl;
   try {
-    sourceHost = new URL(url).hostname.toLowerCase().replace(/^www\./, '');
+    requestUrl = new URL(url);
+    sourceHost = requestUrl.hostname.toLowerCase().replace(/^www\./, '');
+    if (sourceHost === 'irna.ir') requestUrl.hostname = 'www2.irna.ir';
   } catch {
     return { category: null, reason: 'INVALID_URL', url };
   }
@@ -111,7 +114,7 @@ async function inspectArticlePage(url) {
   }
 
   try {
-    const response = await fetch(url, {
+    const response = await fetch(requestUrl.href, {
       redirect: 'follow',
       signal: AbortSignal.timeout(15000),
       headers: {
