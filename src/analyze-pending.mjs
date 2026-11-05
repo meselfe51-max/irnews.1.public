@@ -5,6 +5,7 @@ import { cleanCategory, getPageCategory, getRssCategory, getText } from './sourc
 const DATABASE_URL = process.env.DATABASE_URL;
 const DRY_RUN = process.env.DRY_RUN !== 'false';
 const BATCH_SIZE = 100;
+const blockedSourceHosts = new Set();
 const rssParser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: '@_',
@@ -75,13 +76,8 @@ async function loadRssCategories(sources) {
         }
       }
 
-      const samples = items.slice(0, 3).map(item => ({
-        link: getText(item.link).trim(),
-        identity: articleIdentity(getText(item.link).trim()),
-        category: getRssCategory(item),
-      }));
       console.log(`RSS_CATEGORY_INDEX source=${source.name} items=${items.length} categorized=${items.filter(item => getRssCategory(item)).length} identities=${items.filter(item => articleIdentity(getText(item.link).trim())).length}`);
-      console.log(`RSS_CATEGORY_SAMPLES source=${source.name} data=${JSON.stringify(samples)}`);
+
     } catch (error) {
       console.log(`RSS_CATEGORY_FETCH_FAILED source=${source.name} error=${error.message}`);
     }
@@ -102,6 +98,16 @@ const sql = postgres(DATABASE_URL, {
 async function inspectArticlePage(url) {
   if (!url || !/^https?:\/\//i.test(url)) {
     return { category: null, reason: 'INVALID_URL', url: url || null };
+  }
+
+  let sourceHost;
+  try {
+    sourceHost = new URL(url).hostname.toLowerCase().replace(/^www\./, '');
+  } catch {
+    return { category: null, reason: 'INVALID_URL', url };
+  }
+  if (blockedSourceHosts.has(sourceHost)) {
+    return { category: null, reason: 'SOURCE_HOST_BLOCKED', sourceHost };
   }
 
   try {
@@ -130,10 +136,16 @@ async function inspectArticlePage(url) {
     }
 
     const html = await response.text();
-    if (/Just a moment|Checking your browser|cf-chl-|challenge-platform|در حال انتقال/i.test(html)) {
+    const server = response.headers.get('server') || '';
+    if (
+      /Just a moment|Checking your browser|cf-chl-|challenge-platform/i.test(html)
+      || (/ArvanCloud/i.test(server) && /Transferring to the website|در حال انتقال/i.test(html))
+      || /\/cdn-cgi\/assets\/css\/static-pages-/i.test(html)
+    ) {
+      blockedSourceHosts.add(sourceHost);
       return {
-        category: null, reason: 'BOT_CHALLENGE', status, contentType,
-        finalUrl, htmlLength: html.length,
+        category: null, reason: 'SOURCE_HOST_BLOCKED', status, contentType,
+        finalUrl, htmlLength: html.length, server,
       };
     }
 
@@ -160,7 +172,6 @@ async function inspectArticlePage(url) {
       htmlLength: html.length,
       pageTitle,
       htmlPreview,
-      htmlRawPreview: /86312839|1405081309147/.test(url) ? html.slice(0, 2200) : undefined,
       server: response.headers.get('server'),
       via: response.headers.get('via'),
       hasArticleSectionMeta: /(?:article:section|og:article:section|name=["']section)/i.test(html),
