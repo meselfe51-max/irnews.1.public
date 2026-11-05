@@ -175,8 +175,8 @@ async function inspectArticlePage(url) {
     sourceHost = requestUrl.hostname.toLowerCase().replace(/^www\./, '');
     if (sourceHost === 'irna.ir') {
       requestUrl.hostname = 'www2.irna.ir';
-      const articlePath = requestUrl.pathname.match(/^\/(news|photo|video)\/(\d+)/i);
-      if (articlePath) requestUrl.pathname = `/${articlePath[1]}/${articlePath[2]}/`;
+      const articleId = requestUrl.pathname.match(/^\/(?:news|photo|video)\/(\d+)/i)?.[1];
+      if (articleId) requestUrl.pathname = `/news/${articleId}/`;
     }
   } catch {
     return { category: null, reason: 'INVALID_URL', url };
