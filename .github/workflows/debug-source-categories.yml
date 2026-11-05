@@ -24,5 +24,8 @@ jobs:
       - name: Install dependencies
         run: npm install --no-package-lock
 
+      - name: Validate ingestion syntax
+        run: node --check src/ingest.mjs
+
       - name: Diagnose all news sources
         run: node scripts/debug-source-categories.mjs
