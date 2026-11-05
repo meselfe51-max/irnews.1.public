@@ -8,6 +8,7 @@ on:
     paths:
       - 'src/analyze-pending.mjs'
       - 'src/source-category.mjs'
+      - 'src/isna-rss-feeds.mjs'
       - '.github/workflows/analyze-pending.yml'
   workflow_dispatch:
     inputs:
