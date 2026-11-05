@@ -1,3 +1,4 @@
+
 import postgres from 'postgres';
 import { XMLParser } from 'fast-xml-parser';
 import { createHash } from 'node:crypto';
@@ -50,9 +51,11 @@ function cleanText(value) {
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
     .replace(/<[^>]*>/g, ' ')
     .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
+    .replace(/&gt;/gi, '>')
+    .replace(/&lt;/gi, '<')
     .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&amp;/gi, '&')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -86,7 +89,6 @@ function getRssCategory(item) {
     })
     .filter(Boolean);
 
-  // اگر RSS چند دسته داده باشد، همه را بدون حدس با « | » نگه می‌داریم.
   return categories.length ? [...new Set(categories)].join(' | ') : null;
 }
 
@@ -109,23 +111,62 @@ function getMetaContent(html, attribute, value) {
   return null;
 }
 
-function findJsonLdSection(value) {
+function getBreadcrumbCategory(breadcrumb) {
+  if (typeof breadcrumb === 'string') {
+    return cleanCategory(breadcrumb);
+  }
+
+  if (!breadcrumb || typeof breadcrumb !== 'object') {
+    return null;
+  }
+
+  const items = Array.isArray(breadcrumb.itemListElement)
+    ? breadcrumb.itemListElement
+    : [];
+
+  const names = items
+    .map(entry => {
+      const item = entry?.item;
+
+      if (typeof item === 'string') return item;
+
+      return item?.name || entry?.name || '';
+    })
+    .map(value => cleanCategory(value))
+    .filter(Boolean)
+    .filter(value => !/^(خانه|صفحه اصلی|home)$/i.test(value));
+
+  return names.length ? names[names.length - 1] : null;
+}
+
+function findJsonLdCategory(value) {
   if (!value || typeof value !== 'object') return null;
 
   if (Array.isArray(value)) {
     for (const item of value) {
-      const found = findJsonLdSection(item);
+      const found = findJsonLdCategory(item);
       if (found) return found;
     }
+
     return null;
   }
 
   const section = cleanCategory(value.articleSection);
   if (section) return section;
 
+  const mainEntity = value.mainEntityOfPage;
+
+  if (mainEntity && typeof mainEntity === 'object') {
+    const breadcrumbCategory = getBreadcrumbCategory(
+      mainEntity.breadcrumb
+    );
+
+    if (breadcrumbCategory) return breadcrumbCategory;
+  }
+
   for (const child of Object.values(value)) {
     if (child && typeof child === 'object') {
-      const found = findJsonLdSection(child);
+      const found = findJsonLdCategory(child);
       if (found) return found;
     }
   }
@@ -157,7 +198,7 @@ function getPageCategory(html) {
       .trim();
 
     try {
-      const category = findJsonLdSection(JSON.parse(json));
+      const category = findJsonLdCategory(JSON.parse(json));
       if (category) return category;
     } catch {
       // JSON-LD نامعتبر نادیده گرفته می‌شود.
@@ -186,12 +227,24 @@ async function fetchPageCategory(url) {
     if (!response.ok) return null;
 
     const contentType = response.headers.get('content-type') || '';
-    if (!contentType.includes('text/html') &&
-        !contentType.includes('application/xhtml+xml')) {
+
+    if (
+      !contentType.includes('text/html') &&
+      !contentType.includes('application/xhtml+xml')
+    ) {
       return null;
     }
 
-    return getPageCategory(await response.text());
+    const html = await response.text();
+
+    if (
+      /Just a moment|Checking your browser|cf-chl-|challenge-platform|در حال انتقال/i.test(html)
+    ) {
+      console.warn(`صفحه واسط یا محدودیت Cloudflare: ${url}`);
+      return null;
+    }
+
+    return getPageCategory(html);
   } catch (error) {
     console.warn(`دریافت دسته صفحه ناموفق بود: ${url} | ${error.message}`);
     return null;
@@ -222,13 +275,17 @@ function getImage(item) {
 
 function parseDate(value) {
   if (!value) return null;
+
   const date = new Date(getText(value));
+
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
 function getItems(data) {
   const items = data?.rss?.channel?.item;
+
   if (!items) return [];
+
   return Array.isArray(items) ? items : [items];
 }
 
@@ -255,14 +312,17 @@ async function saveArticle(source, item) {
     item.summary
   );
 
-  if (!title || !link || !/^https?:\/\//i.test(link)) return false;
+  if (!title || !link || !/^https?:\/\//i.test(link)) {
+    return false;
+  }
 
   const imageUrl = getImage(item);
+
   const publishedAt = parseDate(
     item.pubDate || item.published || item.updated
   );
 
-  // اول دسته RSS؛ فقط در صورت نبود آن، متادیتای صفحه همان خبر.
+  // اول دسته RSS؛ فقط در صورت نبود آن، صفحه همان خبر بررسی می‌شود.
   const rssCategory = getRssCategory(item);
   const sourceCategory = rssCategory || await fetchPageCategory(link);
 
@@ -316,22 +376,30 @@ async function fetchSource(source) {
       },
     });
 
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
 
     const xml = await response.text();
     const data = parser.parse(xml);
     const items = getItems(data);
 
-    if (!items.length) throw new Error('هیچ خبر RSS پیدا نشد.');
+    if (!items.length) {
+      throw new Error('هیچ خبر RSS پیدا نشد.');
+    }
 
     let inserted = 0;
     let withSourceCategory = 0;
 
     for (const item of items) {
       const hasRssCategory = Boolean(getRssCategory(item));
+
       if (await saveArticle(source, item)) {
         inserted++;
-        if (hasRssCategory) withSourceCategory++;
+
+        if (hasRssCategory) {
+          withSourceCategory++;
+        }
       }
     }
 
