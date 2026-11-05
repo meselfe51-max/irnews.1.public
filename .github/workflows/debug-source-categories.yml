@@ -1,8 +1,13 @@
-
 name: Debug Source Categories
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - 'scripts/debug-source-categories.mjs'
+      - 'src/source-category.mjs'
+      - 'scripts/test-source-categories.mjs'
+      - '.github/workflows/debug-source-categories.yml'
 
 permissions:
   contents: read
