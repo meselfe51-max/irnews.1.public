@@ -108,21 +108,13 @@ function extractImage(itemBlocks, feedUrl) {
 async function checkSource(source) {
   const result = {
     name: source.name || 'Unknown',
+    enabled: source.enabled !== false,
     status: '✅ OK',
     site: '-',
     rss: '-',
     rssUrl: '',
     image: '-',
   };
-
-  if (source.enabled === false) {
-    result.status = '⏭️ SKIPPED';
-    result.site = 'Disabled';
-    result.rss = 'Disabled';
-    result.image = 'Disabled';
-
-    return result;
-  }
 
   let siteUrl;
 
@@ -259,7 +251,6 @@ async function checkSource(source) {
   return result;
 }
 
-// خواندن فایل منابع
 let sources;
 
 try {
@@ -273,7 +264,6 @@ try {
   process.exit(1);
 }
 
-// اجرای بررسی منابع
 const results = [];
 
 console.log('\n========== NEWS SOURCES CHECK ==========\n');
@@ -284,7 +274,7 @@ for (const source of sources) {
   results.push(result);
 
   console.log(
-    `${result.status} ${result.name}\n` +
+    `${result.status} ${result.name} [${result.enabled ? 'ENABLED' : 'DISABLED - DIAGNOSTIC ONLY'}]\n` +
     `  Site : ${result.site}\n` +
     `  RSS  : ${result.rss}\n` +
     `  URL  : ${result.rssUrl || '-'}\n` +
@@ -292,71 +282,52 @@ for (const source of sources) {
   );
 }
 
-// محاسبه آمار
-const active = results.filter(
-  (item) => item.status !== '⏭️ SKIPPED'
-);
+const active = results.filter(item => item.enabled);
+const activeSuccessful = active.filter(item => item.status === '✅ OK').length;
+const activePartial = active.filter(item => item.status === '⚠️ PARTIAL').length;
+const activeFailed = active.filter(item => item.status === '❌ FAIL').length;
+const disabled = results.filter(item => !item.enabled);
+const disabledWithFeed = disabled.filter(item => item.status === '✅ OK').length;
 
-const successful = active.filter(
-  (item) => item.status === '✅ OK'
-).length;
-
-const partial = active.filter(
-  (item) => item.status === '⚠️ PARTIAL'
-).length;
-
-const failed = active.filter(
-  (item) => item.status === '❌ FAIL'
-).length;
-
-const skipped = results.length - active.length;
-
-// نمایش گزارش
 console.log('========== SUMMARY ==========');
-console.log(`Total sources : ${results.length}`);
-console.log(`Active sources: ${active.length}`);
-console.log(`Successful    : ${successful}`);
-console.log(`Partial       : ${partial}`);
-console.log(`Failed        : ${failed}`);
-console.log(`Skipped       : ${skipped}`);
+console.log(`Total sources: ${results.length}`);
+console.log(`Enabled sources: ${active.length}`);
+console.log(`Enabled successful: ${activeSuccessful}`);
+console.log(`Enabled partial: ${activePartial}`);
+console.log(`Enabled failed: ${activeFailed}`);
+console.log(`Disabled diagnostic checks: ${disabled.length}`);
+console.log(`Disabled with valid feed: ${disabledWithFeed}`);
 
-// گزارش GitHub Actions
 const summary = [
   '# News Sources Check',
   '',
   `- Total: ${results.length}`,
-  `- Active: ${active.length}`,
-  `- Successful: ${successful}`,
-  `- Partial: ${partial}`,
-  `- Failed: ${failed}`,
-  `- Skipped: ${skipped}`,
+  `- Enabled: ${active.length}`,
+  `- Enabled successful: ${activeSuccessful}`,
+  `- Enabled partial: ${activePartial}`,
+  `- Enabled failed: ${activeFailed}`,
+  `- Disabled diagnostic checks: ${disabled.length}`,
+  `- Disabled with valid feed: ${disabledWithFeed}`,
   '',
-  '| Source | Status | Site | RSS | Image |',
-  '|---|---|---|---|---|',
-  ...results.map(
-    (item) =>
-      `| ${item.name} | ${item.status} | ${item.site} | ${item.rss} | ${item.image} |`
+  '| Source | Enabled | Status | Site | RSS | Image |',
+  '|---|---|---|---|---|---|',
+  ...results.map(item =>
+    `| ${item.name} | ${item.enabled ? 'yes' : 'no'} | ${item.status} | ${item.site} | ${item.rss} | ${item.image} |`
   ),
   '',
   '## RSS URLs',
   '',
-  ...results
-    .filter((item) => item.rssUrl)
-    .map((item) => `- ${item.name}: ${item.rssUrl}`),
+  ...results.filter(item => item.rssUrl).map(item => `- ${item.name}: ${item.rssUrl}`),
   '',
 ].join('\n');
 
 if (process.env.GITHUB_STEP_SUMMARY) {
-  appendFileSync(
-    process.env.GITHUB_STEP_SUMMARY,
-    `${summary}\n`
-  );
+  appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${summary}\n`);
 }
 
-// تعیین نتیجه نهایی Workflow
-if (failed > 0 || partial > 0) {
-  console.error('\n❌ Source check completed with errors.');
+if (activeFailed > 0 || activePartial > 0) {
+  console.error('\n❌ One or more enabled sources need attention.');
   process.exitCode = 1;
 } else {
-  console.log('\n✅ All active sources passed.');
+  console.log('\n✅ All enabled sources passed. Disabled sources were checked for diagnostics only.');
 }
