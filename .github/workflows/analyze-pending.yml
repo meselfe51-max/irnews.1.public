@@ -9,7 +9,6 @@ on:
       - 'src/analyze-pending.mjs'
       - 'src/source-category.mjs'
       - 'src/isna-rss-feeds.mjs'
-      - '.github/run-live-category-backfill'
       - '.github/workflows/analyze-pending.yml'
   workflow_dispatch:
     inputs:
@@ -46,5 +45,5 @@ jobs:
       - name: Analyze pending articles
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          DRY_RUN: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[live-category-backfill]') && 'false' || inputs.dry_run }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: node src/analyze-pending.mjs
