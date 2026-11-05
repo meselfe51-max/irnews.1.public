@@ -35,7 +35,7 @@ function clean(value) {
     .replace(/&quot;/gi, '"')
     .replace(/&#39;|&apos;/gi, "'")
     .replace(/&amp;/gi, '&')
-    .replace(/\\s+/g, ' ')
+    .replace(/\s+/g, ' ')
     .trim();
   return result && result.length <= 250 ? result : null;
 }
@@ -67,7 +67,7 @@ function itemLink(item) {
   }
   if (link?.['@_href']) return link['@_href'];
   const guid = item.guid;
-  return typeof guid === 'string' && /^https?:\\/\\//i.test(guid) ? guid : null;
+  return typeof guid === 'string' && /^https?:\/\//i.test(guid) ? guid : null;
 }
 
 function rssCategory(item) {
@@ -136,16 +136,16 @@ function jsonLdCategory(value, articleUrl) {
 }
 
 function pageCategory(html, articleUrl) {
-  const tags = html.match(/<meta\\b[^>]*>/gi) || [];
+  const tags = html.match(/<meta\b[^>]*>/gi) || [];
   for (const tag of tags) {
     if (!/article:section|og:article:section|name=["']section["']/i.test(tag)) continue;
     const match = tag.match(/content=["']([^"']+)["']/i);
     if (match?.[1]) return clean(match[1]);
   }
 
-  const scripts = html.match(/<script\\b[^>]*type=["']application\\/ld\\+json["'][^>]*>[\\s\\S]*?<\\/script>/gi) || [];
+  const scripts = html.match(/<script\b[^>]*type=["']application\/ld\+json["'][^>]*>[\s\S]*?<\/script>/gi) || [];
   for (const script of scripts) {
-    const json = script.replace(/^<script\\b[^>]*>/i, '').replace(/<\\/script>$/i, '').trim();
+    const json = script.replace(/^<script\b[^>]*>/i, '').replace(/<\/script>$/i, '').trim();
     try {
       const found = jsonLdCategory(JSON.parse(json), articleUrl);
       if (found) return found;
@@ -157,7 +157,7 @@ function pageCategory(html, articleUrl) {
 }
 
 async function pageCategoryFor(url) {
-  if (!url || !/^https?:\\/\\//i.test(url)) return { category: null, note: 'invalid article URL' };
+  if (!url || !/^https?:\/\//i.test(url)) return { category: null, note: 'invalid article URL' };
   try {
     const response = await fetch(url, {
       headers: { ...HEADERS, Accept: 'text/html,application/xhtml+xml' },
@@ -176,7 +176,7 @@ async function pageCategoryFor(url) {
 }
 
 async function inspect(source) {
-  console.log(`\\n=== ${source.name} ===`);
+  console.log(`\n=== ${source.name} ===`);
   try {
     const response = await fetch(source.rss, {
       headers: HEADERS,
@@ -185,7 +185,7 @@ async function inspect(source) {
     });
     if (!response.ok) throw new Error(`RSS HTTP ${response.status}`);
     const xml = await response.text();
-    if (!/<(rss|feed)\\b/i.test(xml)) throw new Error('Response is not RSS/Atom XML');
+    if (!/<(rss|feed)\b/i.test(xml)) throw new Error('Response is not RSS/Atom XML');
 
     const news = itemsFrom(parser.parse(xml)).slice(0, SAMPLE_SIZE);
     console.log(`RSS items sampled: ${news.length}`);
