@@ -120,6 +120,38 @@ try {
     console.log('\n۳۰ دسته پرتکرار منبع:');
     console.log(JSON.stringify(categoryDistribution, null, 2));
   }
+    const sourceCoverage = await sql`
+      SELECT
+        COALESCE(s.name, 'منبع نامشخص') AS source_name,
+        COUNT(a.id)::int AS total_articles,
+        COUNT(a.id) FILTER (
+          WHERE a.source_category IS NOT NULL AND BTRIM(a.source_category) <> ''
+        )::int AS with_source_category,
+        COUNT(a.id) FILTER (
+          WHERE a.source_category IS NULL OR BTRIM(a.source_category) = ''
+        )::int AS without_source_category,
+        COUNT(DISTINCT BTRIM(a.source_category)) FILTER (
+          WHERE a.source_category IS NOT NULL AND BTRIM(a.source_category) <> ''
+        )::int AS distinct_categories
+      FROM articles a
+      LEFT JOIN sources s ON s.id = a.source_id
+      GROUP BY s.name
+      ORDER BY total_articles DESC, source_name
+    `;
+
+    console.log('\nپوشش دسته‌بندی به تفکیک خبرگزاری (فقط خواندنی):');
+    console.log(JSON.stringify(sourceCoverage, null, 2));
+
+    const pendingWithoutCategory = await sql`
+      SELECT COUNT(*)::int AS pending_without_source_category
+      FROM articles
+      WHERE status = 'pending'
+        AND deleted_at IS NULL
+        AND (source_category IS NULL OR BTRIM(source_category) = '')
+    `;
+
+    console.log('\nاخبار در انتظار بدون دسته منبع:');
+    console.log(JSON.stringify(pendingWithoutCategory[0], null, 2));
 } catch (error) {
   const message = String(error.message || '')
     .replace(/postgres(ql)?:\/\/\S+/g, '***');
