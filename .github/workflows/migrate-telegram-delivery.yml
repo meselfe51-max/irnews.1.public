@@ -1,0 +1,27 @@
+name: Migrate Telegram Delivery Tracking
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/migrate-telegram-delivery.mjs"
+      - ".github/workflows/migrate-telegram-delivery.yml"
+  workflow_dispatch:
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install dependencies
+        run: npm install
+      - name: Apply additive migration
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: node scripts/migrate-telegram-delivery.mjs
