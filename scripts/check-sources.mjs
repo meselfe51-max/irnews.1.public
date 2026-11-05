@@ -6,20 +6,31 @@ const TIMEOUT_MS = 15000;
 
 async function fetchUrl(url) {
   const started = Date.now();
+  let lastError;
 
-  const response = await fetch(url, {
-    headers: {
-      'user-agent': USER_AGENT,
-      accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml, text/html;q=0.9, */*;q=0.8',
-    },
-    redirect: 'follow',
-    signal: AbortSignal.timeout(TIMEOUT_MS),
-  });
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const response = await fetch(url, {
+        headers: {
+          'user-agent': USER_AGENT,
+          accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml, text/html;q=0.9, */*;q=0.8',
+        },
+        redirect: 'follow',
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+      });
 
-  return {
-    response,
-    duration: Date.now() - started,
-  };
+      return {
+        response,
+        duration: Date.now() - started,
+      };
+    } catch (error) {
+      lastError = error;
+      if (attempt === 2) throw error;
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+  }
+
+  throw lastError || new Error('Request failed');
 }
 
 function absoluteUrl(value, base) {
