@@ -1,38 +1,39 @@
 const probes = [
-  { source: 'irna', host: 'www.irna.ir', id: '86312839' },
-  { source: 'isna', host: 'www.isna.ir', id: '1405081309147' },
+  { source: 'irna-www', url: 'https://www.irna.ir/news/86312839/' },
+  { source: 'irna-root', url: 'https://irna.ir/news/86312839/' },
+  { source: 'irna-www2', url: 'https://www2.irna.ir/news/86312839/' },
+  { source: 'isna-www', url: 'https://www.isna.ir/news/1405081309147/' },
+  { source: 'isna-root', url: 'https://isna.ir/news/1405081309147/' },
+  { source: 'isna-www2', url: 'https://www2.isna.ir/news/1405081309147/' },
 ];
 
 for (const probe of probes) {
-  const url = new URL('https://freenewsapi.ai/v1/search');
-  url.searchParams.set('host', probe.host);
-  url.searchParams.set('q', probe.id);
-  url.searchParams.set('size', '10');
-
   try {
-    const response = await fetch(url, {
-      signal: AbortSignal.timeout(20000),
-      headers: { Accept: 'application/json', 'User-Agent': 'LifeNewsMetadataProbe/1.0' },
+    const response = await fetch(probe.url, {
+      redirect: 'follow',
+      signal: AbortSignal.timeout(12000),
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; LifeNewsMetadataProbe/1.0)',
+        Accept: 'text/html,application/xhtml+xml',
+        'Accept-Language': 'fa-IR,fa;q=0.9,en;q=0.5',
+      },
     });
-    const body = await response.text();
-    let data;
-    try { data = JSON.parse(body); } catch { data = null; }
-    const rows = Array.isArray(data) ? data : data?.results || data?.items || data?.articles || [];
+    const html = await response.text();
+    const title = html.match(/<title[^>]*>([\\s\\S]*?)<\\/title>/i)?.[1]?.replace(/<[^>]+>/g, ' ').trim();
+    const meta = html.match(/<meta[^>]+(?:article:section|og:article:section|name=[\\\"']section)[^>]+>/i)?.[0];
     console.log(JSON.stringify({
       source: probe.source,
       status: response.status,
+      finalUrl: response.url,
       contentType: response.headers.get('content-type'),
-      topLevelKeys: data && typeof data === 'object' ? Object.keys(data) : [],
-      count: rows.length,
-      samples: rows.slice(0, 3).map(row => ({
-        title: row.title,
-        url: row.url || row.link,
-        section: row.section,
-        category: row.category,
-        categories: row.categories,
-        published_at: row.published_at,
-      })),
-      bodyPreview: rows.length ? undefined : body.slice(0, 700),
+      server: response.headers.get('server'),
+      length: html.length,
+      title: title || null,
+      hasJsonLd: /application\\/ld\\+json/i.test(html),
+      hasBreadcrumb: /BreadcrumbList/i.test(html),
+      hasTransferPage: /Transferring to the website|در حال انتقال|static-pages-/i.test(html),
+      meta: meta || null,
+      preview: html.slice(0, 180).replace(/\\s+/g, ' '),
     }));
   } catch (error) {
     console.log(JSON.stringify({ source: probe.source, error: error.message }));
