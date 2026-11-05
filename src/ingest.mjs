@@ -106,9 +106,9 @@ async function saveArticle(source, item) {
     item.pubDate || item.published || item.updated
   );
 
-  // اول دسته RSS؛ فقط در صورت نبود آن، صفحه همان خبر بررسی می‌شود.
+  // خبر را ابتدا با اطلاعات خام RSS ذخیره می‌کنیم تا خطای دریافت صفحه
+  // خبر یا استخراج دسته‌بندی مانع از ثبت خود خبر نشود.
   const rssCategory = getRssCategory(item);
-  const sourceCategory = rssCategory || await fetchPageCategory(link);
 
   const contentHash = createHash('sha256')
     .update(`${title}\n${body}`)
@@ -139,14 +139,39 @@ async function saveArticle(source, item) {
       'pending',
       'none',
       ${contentHash},
-      ${sourceCategory}
+      ${rssCategory}
     )
     ON CONFLICT (source_url) DO NOTHING
     RETURNING id
   `;
 
+  if (result.length === 0) {
+    return { inserted: false, hasSourceCategory: Boolean(rssCategory) };
+  }
+
+  let sourceCategory = rssCategory;
+
+  if (!sourceCategory) {
+    try {
+      sourceCategory = await fetchPageCategory(link);
+
+      if (sourceCategory) {
+        await sql`
+          UPDATE articles
+          SET source_category = ${sourceCategory}
+          WHERE id = ${result[0].id}
+            AND (source_category IS NULL OR BTRIM(source_category) = '')
+        `;
+      }
+    } catch (error) {
+      console.warn(
+        `خبر ذخیره شد اما دریافت دسته‌بندی ناموفق بود: ${link} | ${error.message}`
+      );
+    }
+  }
+
   return {
-    inserted: result.length > 0,
+    inserted: true,
     hasSourceCategory: Boolean(sourceCategory),
   };
 }
