@@ -1,6 +1,7 @@
 import postgres from 'postgres';
 import { XMLParser } from 'fast-xml-parser';
 import { cleanCategory, getPageCategory, getRssCategory, getText } from './source-category.mjs';
+import { ISNA_RSS_FEEDS } from './isna-rss-feeds.mjs';
 
 const DATABASE_URL = process.env.DATABASE_URL;
 const DRY_RUN = process.env.DRY_RUN !== 'false';
@@ -84,6 +85,73 @@ async function loadRssCategories(sources) {
   }
 
   return { categories, categoriesByIdentity };
+}
+
+async function loadIsnaServiceCategories() {
+  const categories = new Map();
+  const failedFeeds = [];
+  let checkedFeeds = 0;
+
+  for (let offset = 0; offset < ISNA_RSS_FEEDS.length; offset += 6) {
+    const batch = ISNA_RSS_FEEDS.slice(offset, offset + 6);
+    const results = await Promise.all(batch.map(async feed => {
+      try {
+        const response = await fetch(feed.url, {
+          redirect: 'follow',
+          signal: AbortSignal.timeout(15000),
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (compatible; LifeNewsBot/1.0)',
+            Accept: 'application/rss+xml, application/xml, text/xml',
+          },
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+        const xml = await response.text();
+        if (!xml.includes('<rss')) throw new Error('NON_RSS_RESPONSE');
+
+        const data = rssParser.parse(xml);
+        const rawItems = data?.rss?.channel?.item;
+        const items = Array.isArray(rawItems) ? rawItems : rawItems ? [rawItems] : [];
+
+        return { feed, items };
+      } catch (error) {
+        return { feed, error: error.message };
+      }
+    }));
+
+    for (const result of results) {
+      if (result.error) {
+        failedFeeds.push({ id: result.feed.id, error: result.error });
+        continue;
+      }
+
+      checkedFeeds++;
+      for (const item of result.items) {
+        const link = getText(item.link).trim();
+        const identity = articleIdentity(link);
+        if (!identity || !identity.startsWith('isna.ir|')) continue;
+
+        const category = getRssCategory(item) || cleanCategory(result.feed.label);
+        if (!category) continue;
+
+        const current = categories.get(identity);
+        const depth = category.split(' > ').length;
+        const currentDepth = current ? current.split(' > ').length : 0;
+        if (!current || depth > currentDepth) categories.set(identity, category);
+      }
+    }
+  }
+
+  console.log(JSON.stringify({
+    event: 'ISNA_SERVICE_RSS_INDEX',
+    feeds_total: ISNA_RSS_FEEDS.length,
+    feeds_ok: checkedFeeds,
+    feeds_failed: failedFeeds.length,
+    article_identities: categories.size,
+    failed_feed_samples: failedFeeds.slice(0, 5),
+  }));
+
+  return categories;
 }
 
 if (!DATABASE_URL) throw new Error('DATABASE_URL تنظیم نشده است.');
@@ -204,8 +272,6 @@ async function main() {
       WHERE enabled = true
       ORDER BY id
     `;
-    const { categories: rssCategories, categoriesByIdentity } = await loadRssCategories(sources);
-
     const articles = await sql`
       SELECT a.id, a.source_url, a.title, a.source_category, s.name AS source_name
       FROM articles a
@@ -216,6 +282,17 @@ async function main() {
       ORDER BY a.id ASC
       LIMIT ${BATCH_SIZE}
     `;
+
+    const { categories: rssCategories, categoriesByIdentity } = await loadRssCategories(sources);
+    const needsIsnaArchive = articles.some(article => {
+      if (article.source_name !== 'ایسنا') return false;
+      const identity = articleIdentity(article.source_url);
+      return !rssCategories.has(normalizeUrl(article.source_url))
+        && !(identity && categoriesByIdentity.has(identity));
+    });
+    const isnaServiceCategories = needsIsnaArchive
+      ? await loadIsnaServiceCategories()
+      : new Map();
 
     const report = {
       checked: 0,
@@ -242,12 +319,17 @@ async function main() {
         const identity = articleIdentity(article.source_url);
         category = rssCategories.get(normalizedUrl)
           || (identity ? categoriesByIdentity.get(identity) : null)
+          || (article.source_name === 'ایسنا' && identity
+            ? isnaServiceCategories.get(identity)
+            : null)
           || null;
         if (category) {
           diagnostic = {
             reason: rssCategories.has(normalizedUrl)
               ? 'CATEGORY_FOUND_IN_RSS_URL'
-              : 'CATEGORY_FOUND_IN_RSS_ID',
+              : isnaServiceCategories.has(identity)
+                ? 'CATEGORY_FOUND_IN_ISNA_SERVICE_RSS'
+                : 'CATEGORY_FOUND_IN_RSS_ID',
             identity,
           };
         } else {
