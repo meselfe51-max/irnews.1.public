@@ -2,6 +2,12 @@ name: Check sources
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'sources.json'
+      - 'scripts/check-sources.mjs'
+      - '.github/workflows/check-sources.yml'
 
 permissions:
   contents: read
