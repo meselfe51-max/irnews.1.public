@@ -7,7 +7,8 @@ const limitBytes = Number(process.env.DB_STORAGE_LIMIT_BYTES);
 
 if (!databaseUrl) throw new Error('DATABASE_URL تنظیم نشده است.');
 if (!Number.isSafeInteger(limitBytes) || limitBytes <= 0) {
-  throw new Error('DB_STORAGE_LIMIT_BYTES باید ظرفیت مجاز دیتابیس را بر حسب بایت مشخص کند.');
+  console.warn('DB_STORAGE_LIMIT_BYTES تنظیم نشده؛ پایش ظرفیت تا زمان تنظیم این Secret اجرا نمی‌شود.');
+  process.exit(0);
 }
 
 const sql = postgres(databaseUrl, {
@@ -113,19 +114,23 @@ try {
 ظرفیت تنظیم‌شده: ${formatBytes(limitBytes)}`;
     }
 
+    let alertDelivered = true;
     if (message) {
-      const sent = await sendTelegram(message);
-      if (!sent) throw new Error('اطلاعات اتصال تلگرام تنظیم نشده؛ وضعیت هشدار ثبت نشد تا پیام بعداً دوباره تلاش شود.');
+      alertDelivered = await sendTelegram(message);
     }
 
-    await sql`
-      INSERT INTO system_alert_state (alert_key, alert_level, last_value_bytes, updated_at)
-      VALUES ('database_storage', ${level}, ${usedBytes}, NOW())
-      ON CONFLICT (alert_key) DO UPDATE SET
-        alert_level = EXCLUDED.alert_level,
-        last_value_bytes = EXCLUDED.last_value_bytes,
-        updated_at = NOW()
-    `;
+    if (alertDelivered) {
+      await sql`
+        INSERT INTO system_alert_state (alert_key, alert_level, last_value_bytes, updated_at)
+        VALUES ('database_storage', ${level}, ${usedBytes}, NOW())
+        ON CONFLICT (alert_key) DO UPDATE SET
+          alert_level = EXCLUDED.alert_level,
+          last_value_bytes = EXCLUDED.last_value_bytes,
+          updated_at = NOW()
+      `;
+    } else {
+      console.warn('هشدار ارسال نشد؛ سطح هشدار ثبت نشد تا در اجرای بعدی دوباره تلاش شود.');
+    }
   } else {
     await sql`
       UPDATE system_alert_state
