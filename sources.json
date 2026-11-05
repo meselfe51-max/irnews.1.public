@@ -35,6 +35,7 @@
     "id": "fars",
     "name": "فارس",
     "site": "https://farsnews.ir/",
+    "rss_url": "https://farsnews.ir/rss",
     "enabled": false,
     "interval_minutes": 15
   },
