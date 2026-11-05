@@ -21,5 +21,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      - name: Validate worker syntax and source configuration
+        run: |
+          node --check src/ingest.mjs
+          node --check scripts/check-sources.mjs
+          node --input-type=module -e "import fs from 'node:fs'; const sources=JSON.parse(fs.readFileSync('sources.json','utf8')); if (!Array.isArray(sources) || sources.length !== 6) throw new Error('Expected six configured sources'); console.log('Worker syntax and sources.json: OK')"
       - name: Run source check
         run: node scripts/check-sources.mjs
