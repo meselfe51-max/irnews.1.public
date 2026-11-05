@@ -16,6 +16,7 @@ function normalizeUrl(value) {
     const url = new URL(value);
     url.hash = '';
     url.search = '';
+    url.hostname = url.hostname.toLowerCase().replace(/^www\./, '');
     url.pathname = url.pathname.replace(/\/$/, '');
     return url.href.toLowerCase();
   } catch {
@@ -23,8 +24,23 @@ function normalizeUrl(value) {
   }
 }
 
+function articleIdentity(value) {
+  try {
+    const url = new URL(value);
+    const path = url.pathname;
+    const tasnim = path.match(/\/news\/\d{4}\/\d{1,2}\/\d{1,2}\/(\d+)(?:\/|$)/i);
+    const standard = path.match(/\/(?:news|photo|video)\/(\d+)(?:\/|$)/i);
+    const id = tasnim?.[1] || standard?.[1];
+    if (!id) return null;
+    return url.hostname.toLowerCase().replace(/^www\./, '') + '|' + id;
+  } catch {
+    return null;
+  }
+}
+
 async function loadRssCategories(sources) {
   const categories = new Map();
+  const categoriesByIdentity = new Map();
 
   for (const source of sources) {
     if (!source.rss_url) continue;
@@ -52,16 +68,26 @@ async function loadRssCategories(sources) {
       for (const item of items) {
         const link = getText(item.link).trim();
         const category = getRssCategory(item);
-        if (link && category) categories.set(normalizeUrl(link), category);
+        if (link && category) {
+          categories.set(normalizeUrl(link), category);
+          const identity = articleIdentity(link);
+          if (identity) categoriesByIdentity.set(identity, category);
+        }
       }
 
-      console.log(`RSS_CATEGORY_INDEX source=${source.name} items=${items.length} categorized=${items.filter(item => getRssCategory(item)).length}`);
+      const samples = items.slice(0, 3).map(item => ({
+        link: getText(item.link).trim(),
+        identity: articleIdentity(getText(item.link).trim()),
+        category: getRssCategory(item),
+      }));
+      console.log(`RSS_CATEGORY_INDEX source=${source.name} items=${items.length} categorized=${items.filter(item => getRssCategory(item)).length} identities=${items.filter(item => articleIdentity(getText(item.link).trim())).length}`);
+      console.log(`RSS_CATEGORY_SAMPLES source=${source.name} data=${JSON.stringify(samples)}`);
     } catch (error) {
       console.log(`RSS_CATEGORY_FETCH_FAILED source=${source.name} error=${error.message}`);
     }
   }
 
-  return categories;
+  return { categories, categoriesByIdentity };
 }
 
 if (!DATABASE_URL) throw new Error('DATABASE_URL تنظیم نشده است.');
@@ -159,7 +185,7 @@ async function main() {
       WHERE enabled = true
       ORDER BY id
     `;
-    const rssCategories = await loadRssCategories(sources);
+    const { categories: rssCategories, categoriesByIdentity } = await loadRssCategories(sources);
 
     const articles = await sql`
       SELECT a.id, a.source_url, a.title, a.source_category, s.name AS source_name
@@ -193,9 +219,18 @@ async function main() {
       if (category) {
         report.already_had_category++;
       } else {
-        category = rssCategories.get(normalizeUrl(article.source_url)) || null;
+        const normalizedUrl = normalizeUrl(article.source_url);
+        const identity = articleIdentity(article.source_url);
+        category = rssCategories.get(normalizedUrl)
+          || (identity ? categoriesByIdentity.get(identity) : null)
+          || null;
         if (category) {
-          diagnostic = { reason: 'CATEGORY_FOUND_IN_RSS' };
+          diagnostic = {
+            reason: rssCategories.has(normalizedUrl)
+              ? 'CATEGORY_FOUND_IN_RSS_URL'
+              : 'CATEGORY_FOUND_IN_RSS_ID',
+            identity,
+          };
         } else {
           diagnostic = await inspectArticlePage(article.source_url);
           category = diagnostic.category;
