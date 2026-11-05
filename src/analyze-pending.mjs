@@ -1,9 +1,68 @@
 import postgres from 'postgres';
-import { cleanCategory, getPageCategory } from './source-category.mjs';
+import { XMLParser } from 'fast-xml-parser';
+import { cleanCategory, getPageCategory, getRssCategory, getText } from './source-category.mjs';
 
 const DATABASE_URL = process.env.DATABASE_URL;
 const DRY_RUN = process.env.DRY_RUN !== 'false';
-const BATCH_SIZE = 20;
+const BATCH_SIZE = 100;
+const rssParser = new XMLParser({
+  ignoreAttributes: false,
+  attributeNamePrefix: '@_',
+  trimValues: true,
+});
+
+function normalizeUrl(value) {
+  try {
+    const url = new URL(value);
+    url.hash = '';
+    url.search = '';
+    url.pathname = url.pathname.replace(/\\/$/, '');
+    return url.href.toLowerCase();
+  } catch {
+    return String(value || '').trim().replace(/\\/$/, '').toLowerCase();
+  }
+}
+
+async function loadRssCategories(sources) {
+  const categories = new Map();
+
+  for (const source of sources) {
+    if (!source.rss_url) continue;
+
+    try {
+      const response = await fetch(source.rss_url, {
+        redirect: 'follow',
+        signal: AbortSignal.timeout(20000),
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; LifeNewsBot/1.0)',
+          Accept: 'application/rss+xml, application/xml, text/xml, */*',
+        },
+      });
+
+      if (!response.ok) {
+        console.log(`RSS_CATEGORY_FETCH_FAILED source=${source.name} status=${response.status}`);
+        continue;
+      }
+
+      const xml = await response.text();
+      const data = rssParser.parse(xml);
+      const rawItems = data?.rss?.channel?.item;
+      const items = Array.isArray(rawItems) ? rawItems : rawItems ? [rawItems] : [];
+
+      for (const item of items) {
+        const link = getText(item.link).trim();
+        const category = getRssCategory(item);
+        if (link && category) categories.set(normalizeUrl(link), category);
+      }
+
+      console.log(`RSS_CATEGORY_INDEX source=${source.name} items=${items.length} categorized=${items.filter(item => getRssCategory(item)).length}`);
+    } catch (error) {
+      console.log(`RSS_CATEGORY_FETCH_FAILED source=${source.name} error=${error.message}`);
+    }
+  }
+
+  return categories;
+}
 
 if (!DATABASE_URL) throw new Error('DATABASE_URL تنظیم نشده است.');
 
@@ -94,12 +153,21 @@ async function inspectArticlePage(url) {
 
 async function main() {
   try {
+    const sources = await sql`
+      SELECT id, name, rss_url
+      FROM sources
+      WHERE enabled = true
+      ORDER BY id
+    `;
+    const rssCategories = await loadRssCategories(sources);
+
     const articles = await sql`
       SELECT a.id, a.source_url, a.title, a.source_category, s.name AS source_name
       FROM articles a
       LEFT JOIN sources s ON s.id = a.source_id
       WHERE a.status = 'pending'
         AND a.deleted_at IS NULL
+        AND (a.source_category IS NULL OR a.source_category = '')
       ORDER BY a.id ASC
       LIMIT ${BATCH_SIZE}
     `;
@@ -125,8 +193,13 @@ async function main() {
       if (category) {
         report.already_had_category++;
       } else {
-        diagnostic = await inspectArticlePage(article.source_url);
-        category = diagnostic.category;
+        category = rssCategories.get(normalizeUrl(article.source_url)) || null;
+        if (category) {
+          diagnostic = { reason: 'CATEGORY_FOUND_IN_RSS' };
+        } else {
+          diagnostic = await inspectArticlePage(article.source_url);
+          category = diagnostic.category;
+        }
         if (category) report.found_from_page++;
         else report.not_found++;
 
