@@ -21,5 +21,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - name: Probe historical metadata endpoints
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Probe official ISNA service feeds
         run: node scripts/probe-archive-api.mjs
