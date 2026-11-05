@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { getText, cleanText, getRssCategory, fetchPageCategory } from './source-category.mjs';
 
 const databaseUrl = process.env.DATABASE_URL;
+const forceFetch = process.env.FORCE_FETCH === 'true';
 
 if (!databaseUrl) {
   throw new Error('DATABASE_URL تنظیم نشده است.');
@@ -252,7 +253,8 @@ async function main() {
       FROM sources
       WHERE enabled = true
         AND (
-          last_checked_at IS NULL
+          ${forceFetch}
+          OR last_checked_at IS NULL
           OR last_checked_at <=
              NOW() - make_interval(mins => interval_minutes)
         )
