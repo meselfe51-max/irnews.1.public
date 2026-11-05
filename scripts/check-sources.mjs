@@ -1,7 +1,7 @@
 import { readFileSync, appendFileSync } from 'node:fs';
 
 const SOURCES_FILE = new URL('../sources.json', import.meta.url);
-const USER_AGENT = 'Mozilla/5.0 (compatible; NewsSourcesCheck/1.0)';
+const USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
 const TIMEOUT_MS = 15000;
 
 async function fetchUrl(url) {
@@ -10,7 +10,7 @@ async function fetchUrl(url) {
   const response = await fetch(url, {
     headers: {
       'user-agent': USER_AGENT,
-      accept: '*/*',
+      accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml, text/html;q=0.9, */*;q=0.8',
     },
     redirect: 'follow',
     signal: AbortSignal.timeout(TIMEOUT_MS),
@@ -171,12 +171,16 @@ async function checkSource(source) {
   }
 
   let feed = null;
+  const feedDiagnostics = [];
 
   for (const candidate of [...new Set(candidates)].slice(0, 12)) {
     try {
       const { response, duration } = await fetchUrl(candidate);
 
-      if (!response.ok) continue;
+      if (!response.ok) {
+        feedDiagnostics.push(`${candidate} -> HTTP ${response.status}`);
+        continue;
+      }
 
       const xml = await response.text();
       const parsed = inspectFeed(xml);
@@ -190,13 +194,18 @@ async function checkSource(source) {
 
         break;
       }
-    } catch {
+      feedDiagnostics.push(`${candidate} -> not RSS (${(response.headers.get('content-type') || 'unknown content-type')})`);
+    } catch (error) {
+      feedDiagnostics.push(`${candidate} -> ${error.message}`);
       // بررسی آدرس بعدی
     }
   }
 
   if (!feed) {
     result.rss = 'No valid RSS feed found';
+    if (source.id === 'irna') {
+      console.log(`  IRNA diagnostics: ${feedDiagnostics.slice(0, 6).join(' | ')}`);
+    }
     result.image = 'Not checked';
     result.status = '❌ FAIL';
 
