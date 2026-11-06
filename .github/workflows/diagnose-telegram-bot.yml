@@ -1,0 +1,184 @@
+name: Diagnose Telegram Bot
+
+on:
+  workflow_dispatch:
+    inputs:
+      admin_telegram_id:
+        description: "Your Telegram numeric user ID (the bot will send you a test reply)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install PostgreSQL client
+        run: npm install --no-save pg
+
+      - name: Diagnose webhook, Telegram, database and admin
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ADMIN_TELEGRAM_ID: ${{ inputs.admin_telegram_id }}
+          WEBHOOK_URL: https://lifenews.vercel.app/api/telegram/webhook
+        run: |
+          node <<'NODE'
+          const { Client } = require("pg");
+
+          const token = process.env.TELEGRAM_BOT_TOKEN;
+          const secret = process.env.TELEGRAM_WEBHOOK_SECRET;
+          const databaseUrl = process.env.DATABASE_URL;
+          const adminId = Number(process.env.ADMIN_TELEGRAM_ID);
+          const webhookUrl = process.env.WEBHOOK_URL;
+          const failures = [];
+
+          function pass(message) { console.log("PASS: " + message); }
+          function fail(message) { console.log("FAIL: " + message); failures.push(message); }
+          function warn(message) { console.log("WARN: " + message); }
+
+          async function telegram(method, body = {}) {
+            const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(body)
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok || !data.ok) {
+              throw new Error(data.description || `Telegram API HTTP ${response.status}`);
+            }
+            return data.result;
+          }
+
+          async function main() {
+            console.log("=== LIFE NEWS TELEGRAM DIAGNOSTIC ===");
+
+            if (!token) fail("GitHub secret TELEGRAM_BOT_TOKEN is missing.");
+            if (!secret) fail("GitHub secret TELEGRAM_WEBHOOK_SECRET is missing.");
+            if (!databaseUrl) fail("GitHub secret DATABASE_URL is missing.");
+            if (!Number.isSafeInteger(adminId) || adminId <= 0) fail("The supplied admin Telegram ID is invalid.");
+            if (failures.length) throw new Error("Required configuration is missing; fix the items above and run again.");
+
+            // 1. Check the live Vercel route and its runtime configuration.
+            let getResponse;
+            try {
+              getResponse = await fetch(webhookUrl, { cache: "no-store" });
+              const data = await getResponse.json().catch(() => ({}));
+              if (getResponse.ok && data.service === "Life News Telegram webhook") {
+                pass("Vercel webhook route is reachable (HTTP " + getResponse.status + ").");
+              } else {
+                fail("Vercel webhook route returned an unexpected response (HTTP " + getResponse.status + ").");
+              }
+              if (data.configured === true) pass("Vercel reports bot token and webhook secret are configured.");
+              else fail("Vercel reports TELEGRAM_BOT_TOKEN or TELEGRAM_WEBHOOK_SECRET is missing.");
+            } catch (error) {
+              fail("Cannot reach Vercel webhook route: " + error.message);
+            }
+
+            // 2. Check Telegram token and registered webhook.
+            let webhookInfo;
+            try {
+              const me = await telegram("getMe");
+              pass("Telegram bot token is valid; bot username is @" + me.username + ".");
+              webhookInfo = await telegram("getWebhookInfo");
+              if (webhookInfo.url === webhookUrl) pass("Telegram webhook URL matches the production endpoint.");
+              else fail("Telegram webhook URL does not match the production endpoint.");
+              console.log("Telegram pending updates: " + (webhookInfo.pending_update_count ?? "unknown"));
+              if (webhookInfo.last_error_message) {
+                fail("Telegram reports a recent delivery error: " + webhookInfo.last_error_message);
+              } else {
+                pass("Telegram reports no recent webhook delivery error.");
+              }
+            } catch (error) {
+              fail("Telegram API check failed: " + error.message);
+            }
+
+            // 3. Check database access and whether the supplied Telegram ID is an enabled admin.
+            let adminExists = false;
+            const client = new Client({
+              connectionString: databaseUrl,
+              ssl: { rejectUnauthorized: false },
+              connectionTimeoutMillis: 10000
+            });
+            try {
+              await client.connect();
+              pass("Neon database connection succeeded.");
+              const result = await client.query(
+                "SELECT id, enabled, role FROM admins WHERE telegram_id = $1 ORDER BY id LIMIT 1",
+                [adminId]
+              );
+              if (!result.rows.length) {
+                fail("This Telegram ID is NOT registered in admins. The bot will not recognize this user as an administrator.");
+              } else if (result.rows[0].enabled !== true) {
+                fail("The admin row exists but enabled=false.");
+              } else {
+                adminExists = true;
+                pass("Telegram ID is registered as an enabled admin (role: " + result.rows[0].role + ").");
+              }
+            } catch (error) {
+              fail("Database/admin check failed: " + error.message);
+            } finally {
+              try { await client.end(); } catch {}
+            }
+
+            // 4. Send a harmless synthetic /start update through the real production webhook.
+            // This makes the production code send one diagnostic reply to the supplied admin chat.
+            try {
+              const update = {
+                update_id: Date.now(),
+                message: {
+                  message_id: Date.now() % 2000000000,
+                  from: { id: adminId, is_bot: false, first_name: "Life News diagnostic" },
+                  chat: { id: adminId, type: "private" },
+                  date: Math.floor(Date.now() / 1000),
+                  text: "/start"
+                }
+              };
+              const response = await fetch(webhookUrl, {
+                method: "POST",
+                headers: {
+                  "content-type": "application/json",
+                  "x-telegram-bot-api-secret-token": secret
+                },
+                body: JSON.stringify(update),
+                cache: "no-store"
+              });
+              const body = await response.text();
+              if (response.status === 200) {
+                pass("Production webhook accepted a test /start update (HTTP 200). Check Telegram for the bot's test reply.");
+                if (!adminExists) warn("The expected reply is an access-denied message because this ID is not an enabled admin.");
+              } else if (response.status === 401) {
+                fail("Production webhook rejected the secret (HTTP 401): TELEGRAM_WEBHOOK_SECRET in GitHub does not match the value configured in Vercel, or Vercel has no secret.");
+              } else if (response.status >= 500) {
+                fail("Production webhook crashed while handling the test update (HTTP " + response.status + "). Check Vercel Function Logs for 'Telegram webhook error'.");
+              } else {
+                fail("Production webhook returned HTTP " + response.status + ". Response: " + body.slice(0, 250));
+              }
+            } catch (error) {
+              fail("Could not send the test update to production: " + error.message);
+            }
+
+            console.log("");
+            console.log("=== DIAGNOSTIC SUMMARY ===");
+            if (failures.length) {
+              console.log("Found " + failures.length + " problem(s). Read the FAIL lines above.");
+              process.exitCode = 1;
+            } else {
+              console.log("All automated checks passed. Confirm that the bot's /start reply arrived in Telegram.");
+            }
+          }
+
+          main().catch(error => {
+            console.error("Diagnostic stopped:", error.message);
+            process.exit(1);
+          });
+          NODE
