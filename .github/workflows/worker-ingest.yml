@@ -15,7 +15,7 @@ on:
       - '.github/workflows/worker-ingest.yml'
 
   schedule:
-    - cron: '*/15 * * * *'
+    - cron: '*/30 * * * *'
 
 permissions:
   contents: read
