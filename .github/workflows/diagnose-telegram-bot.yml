@@ -38,7 +38,7 @@ jobs:
           const secret = process.env.TELEGRAM_WEBHOOK_SECRET || "";
           const databaseUrl = process.env.DATABASE_URL || "";
           const adminIdText = process.env.ADMIN_TELEGRAM_ID || "";
-          const adminId = /^\\d+$/.test(adminIdText) ? Number(adminIdText) : NaN;
+          const adminId = /^\d+$/.test(adminIdText) ? Number(adminIdText) : NaN;
           const webhookUrl = process.env.WEBHOOK_URL;
           const failures = [];
           const warnings = [];
