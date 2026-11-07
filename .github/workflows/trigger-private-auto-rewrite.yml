@@ -24,10 +24,10 @@ jobs:
     steps:
       - name: Process one queued article
         env:
-          REWRITE_SECRET: ${{ secrets.LIFENEWS_REWRITE_CRON_SECRET }}
+          REWRITE_SECRET: ${{ secrets.REWRITE_CRON_SECRET }}
         run: |
           if [ -z "$REWRITE_SECRET" ]; then
-            echo "Missing repository secret: LIFENEWS_REWRITE_CRON_SECRET"
+            echo "Missing repository secret: REWRITE_CRON_SECRET"
             exit 1
           fi
           curl --fail-with-body --silent --show-error \
