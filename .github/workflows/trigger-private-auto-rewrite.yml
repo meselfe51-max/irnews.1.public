@@ -1,6 +1,11 @@
 name: Trigger Life News automatic rewrite
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/trigger-private-auto-rewrite.yml"
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
