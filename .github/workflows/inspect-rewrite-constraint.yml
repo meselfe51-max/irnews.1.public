@@ -1,0 +1,67 @@
+name: Inspect rewrite state constraint (read-only)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install PostgreSQL client
+        run: npm install --no-save pg
+      - name: Inspect database constraint without changing data
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          node <<'NODE'
+          const { Client } = require("pg");
+          async function main() {
+            if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL secret is missing");
+            const client = new Client({
+              connectionString: process.env.DATABASE_URL,
+              ssl: { rejectUnauthorized: false }
+            });
+            try {
+              await client.connect();
+              const constraints = await client.query(`
+                SELECT c.conname, pg_get_constraintdef(c.oid) AS definition
+                FROM pg_constraint c
+                JOIN pg_class t ON t.oid = c.conrelid
+                JOIN pg_namespace n ON n.oid = t.relnamespace
+                WHERE n.nspname = 'public'
+                  AND t.relname = 'articles'
+                  AND c.contype = 'c'
+                  AND c.conname = 'articles_rewrite_state_check'
+              `);
+              console.log("REWRITE_STATE_CONSTRAINT:", JSON.stringify(constraints.rows));
+              const states = await client.query(`
+                SELECT rewrite_state, COUNT(*)::int AS count
+                FROM public.articles
+                GROUP BY rewrite_state
+                ORDER BY rewrite_state
+              `);
+              console.log("CURRENT_REWRITE_STATES:", JSON.stringify(states.rows));
+              const jobs = await client.query(`
+                SELECT status, COUNT(*)::int AS count
+                FROM public.telegram_ai_jobs
+                GROUP BY status
+                ORDER BY status
+              `);
+              console.log("TELEGRAM_AI_JOB_STATES:", JSON.stringify(jobs.rows));
+            } finally {
+              await client.end();
+            }
+          }
+          main().catch(error => {
+            console.error("READ_ONLY_INSPECTION_FAILED:", error.message);
+            process.exit(1);
+          });
+          NODE
